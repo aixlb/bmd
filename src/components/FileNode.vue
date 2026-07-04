@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { ipc, type Entry } from '@/lib/ipc'
 import { menu, type MenuItem } from '@/lib/menuBus'
 import { useTabs } from '@/stores/tabs'
@@ -12,6 +12,54 @@ const tabs = useTabs()
 const expanded = computed(() => !!workspace.expanded[props.entry.path])
 const children = computed(() => workspace.children[props.entry.path] ?? [])
 const activePath = computed(() => tabs.active?.path)
+
+/** 行内重命名（双击 / F2 / 右键菜单） */
+const renaming = ref(false)
+const renameInput = ref<HTMLInputElement | null>(null)
+
+function startRename() {
+  if (renaming.value) return
+  renaming.value = true
+  void nextTick(() => {
+    const el = renameInput.value
+    if (!el) return
+    el.value = props.entry.name
+    el.focus()
+    // 默认选中主文件名（不含扩展名），文件夹全选
+    const dot = props.entry.isDir ? -1 : props.entry.name.lastIndexOf('.')
+    el.setSelectionRange(0, dot > 0 ? dot : props.entry.name.length)
+  })
+}
+
+async function commitRename() {
+  if (!renaming.value) return
+  const value = renameInput.value?.value ?? ''
+  renaming.value = false
+  const name = value.trim()
+  if (!name || name === props.entry.name) return
+  try {
+    const newPath = await ipc().renameEntry(props.entry.path, name)
+    const tab = tabs.tabs.find((t) => t.path === props.entry.path)
+    if (tab) {
+      tab.path = newPath
+      tab.title = name
+    }
+    await workspace.refresh()
+  } catch (e) {
+    // 重名/权限等失败：保留原名，不中断（与右键菜单旧行为一致但不再抛未处理拒绝）
+    console.error('重命名失败:', e)
+  }
+}
+
+function onRenameKey(e: KeyboardEvent) {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    void commitRename()
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    renaming.value = false
+  }
+}
 
 function onClick() {
   if (props.entry.isDir) {
@@ -49,17 +97,7 @@ function onContextMenu(e: MouseEvent) {
     },
     {
       label: '重命名',
-      action: async () => {
-        const name = await m.askText('重命名', entry.name)
-        if (!name || name === entry.name) return
-        const newPath = await ipc().renameEntry(entry.path, name)
-        const tab = tabs.tabs.find((t) => t.path === entry.path)
-        if (tab) {
-          tab.path = newPath
-          tab.title = name
-        }
-        await workspace.refresh()
-      },
+      action: () => startRename(),
     },
     {
       label: '在系统中显示',
@@ -96,11 +134,41 @@ function onContextMenu(e: MouseEvent) {
       }"
       :style="{ paddingLeft: `${10 + depth * 14}px` }"
       @click="onClick"
+      @dblclick.prevent="startRename"
+      @keydown.f2.prevent="startRename"
       @contextmenu.prevent="onContextMenu"
     >
       <span v-if="entry.isDir" class="chevron" :class="{ open: expanded }">›</span>
-      <span v-else class="icon">{{ entry.isMd ? '¶' : '·' }}</span>
-      <span class="name">{{ entry.name }}</span>
+      <span v-else class="chevron" aria-hidden="true"></span>
+      <!-- 图标：Lucide folder/folder-open/file（ISC）、Tabler markdown（MIT） -->
+      <span class="icon">
+        <svg v-if="entry.isDir && expanded" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+        </svg>
+        <svg v-else-if="entry.isDir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+        </svg>
+        <svg v-else-if="entry.isMd" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10" />
+          <path d="M7 15v-6l2 2l2 -2v6" />
+          <path d="M14 13l2 2l2 -2m-2 2v-6" />
+        </svg>
+        <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
+          <path d="M14 2v5a1 1 0 0 0 1 1h5" />
+        </svg>
+      </span>
+      <input
+        v-if="renaming"
+        ref="renameInput"
+        class="rename-input"
+        spellcheck="false"
+        @click.stop
+        @dblclick.stop
+        @keydown.stop="onRenameKey"
+        @blur="commitRename"
+      />
+      <span v-else class="name">{{ entry.name }}</span>
     </button>
     <template v-if="entry.isDir && expanded">
       <FileNode v-for="c in children" :key="c.path" :entry="c" :depth="depth + 1" />
@@ -156,13 +224,43 @@ function onContextMenu(e: MouseEvent) {
 }
 
 .icon {
-  width: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 15px;
+  height: 15px;
   color: var(--bmd-text-faint);
-  text-align: center;
+}
+
+.icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.node.dir .icon {
+  color: color-mix(in srgb, var(--bmd-accent-a) 42%, var(--bmd-text-dim));
+}
+
+.node.md .icon {
+  color: var(--bmd-accent);
 }
 
 .name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 5px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--bmd-text);
+  background: var(--bmd-panel);
+  border: 1px solid color-mix(in srgb, var(--bmd-accent-a) 60%, transparent);
+  border-radius: 4px;
+  outline: none;
 }
 </style>

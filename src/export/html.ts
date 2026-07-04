@@ -2,9 +2,12 @@
 // - 数学：KaTeX 以 MathML 输出——零字体依赖，文件完全自包含
 // - Mermaid：预渲染为 SVG 内嵌
 // - 代码高亮：与编辑器同源（Lezer highlightTree + classHighlighter）
-// 全链路懒加载，不进启动路径。
+// katex/markdown-it 懒加载不进启动路径；Lezer/CM 语言模块复用内核已加载的实例。
 
 import type MarkdownIt from 'markdown-it'
+import { LanguageDescription } from '@codemirror/language'
+import { languages } from '@codemirror/language-data'
+import { classHighlighter, highlightTree } from '@lezer/highlight'
 import { renderMermaid } from '@core/render/lazy'
 
 const escapeHtml = (s: string) =>
@@ -12,12 +15,6 @@ const escapeHtml = (s: string) =>
 
 async function highlightCode(lang: string, code: string): Promise<string | null> {
   if (!lang) return null
-  const [{ languages }, { LanguageDescription }, { highlightTree, classHighlighter }] =
-    await Promise.all([
-      import('@codemirror/language-data'),
-      import('@codemirror/language'),
-      import('@lezer/highlight'),
-    ])
   const desc = LanguageDescription.matchLanguageName(languages, lang, true)
   if (!desc) return null
   try {

@@ -19,8 +19,19 @@ export interface Session {
   active: number | null
 }
 
+export interface SearchHit {
+  path: string
+  name: string
+  /** 首个匹配行（1-based；仅文件名匹配时为 0） */
+  line: number
+  preview: string
+  count: number
+}
+
 export interface Ipc {
   scanDir(path: string): Promise<Entry[]>
+  /** 工作区全文搜索：匹配文件名与 md 内容 */
+  searchText(root: string, query: string, limit: number): Promise<SearchHit[]>
   readDoc(path: string): Promise<DocPayload>
   /** 返回新 mtime；期望 mtime 不匹配时 reject('conflict') */
   writeDocAtomic(path: string, content: string, expectedMtimeMs: number | null): Promise<number>
@@ -110,6 +121,7 @@ function tauriIpc(): Ipc {
   }
   return {
     scanDir: (path) => inv('scan_dir', { path }),
+    searchText: (root, query, limit) => inv('search_text', { root, query, limit }),
     readDoc: (path) => inv('read_doc', { path }),
     writeDocAtomic: (path, content, expectedMtimeMs) =>
       inv('write_doc_atomic', { path, content, expectedMtimeMs }),
@@ -274,6 +286,39 @@ graph LR
       }))
       const byName = (a: Entry, b: Entry) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())
       return [...dirEntries.sort(byName), ...out.sort(byName)]
+    },
+    async searchText(root, query, limit) {
+      const q = query.trim().toLowerCase()
+      if (!q) return []
+      const out: SearchHit[] = []
+      for (const [p, f] of files) {
+        if (!p.startsWith(root + '/')) continue
+        if (!/\.(md|markdown)$/i.test(p)) continue
+        const name = p.split('/').pop() ?? p
+        let count = 0
+        let line = 0
+        let preview = ''
+        const lines = f.content.split('\n')
+        for (let i = 0; i < lines.length; i++) {
+          const ll = lines[i].toLowerCase()
+          let start = 0
+          let idx
+          while ((idx = ll.indexOf(q, start)) !== -1) {
+            count++
+            start = idx + q.length
+          }
+          if (count > 0 && line === 0) {
+            line = i + 1
+            preview = lines[i].trim().slice(0, 120)
+          }
+        }
+        if (count > 0 || name.toLowerCase().includes(q)) {
+          out.push({ path: p, name, line, preview, count })
+          if (out.length >= limit) break
+        }
+      }
+      const nameHit = (h: SearchHit) => (h.name.toLowerCase().includes(q) ? 1 : 0)
+      return out.sort((a, b) => nameHit(b) - nameHit(a) || b.count - a.count)
     },
     async readDoc(path) {
       const f = files.get(path)

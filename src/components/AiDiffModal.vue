@@ -1,6 +1,8 @@
 <script setup lang="ts">
-// 替换选区前的 diff 预览（FR-41），@codemirror/merge 只读对比
+// 替换选区前的 diff 预览（FR-41），@codemirror/merge 只读对比（merge 保持懒加载独立 chunk）
 import { onBeforeUnmount, ref, watch } from 'vue'
+import { EditorState } from '@codemirror/state'
+import { EditorView } from '@codemirror/view'
 
 const props = defineProps<{ visible: boolean; original: string; proposed: string }>()
 const emit = defineEmits<{ apply: []; cancel: [] }>()
@@ -14,11 +16,7 @@ watch(
     mergeView?.destroy()
     mergeView = null
     if (!v) return
-    const [{ MergeView }, { EditorState }, { EditorView }] = await Promise.all([
-      import('@codemirror/merge'),
-      import('@codemirror/state'),
-      import('@codemirror/view'),
-    ])
+    const { MergeView } = await import('@codemirror/merge')
     if (!host.value) return
     mergeView = new MergeView({
       a: { doc: props.original, extensions: [EditorState.readOnly.of(true), EditorView.lineWrapping] },

@@ -5,6 +5,7 @@ import { EditorView, type ViewUpdate } from '@codemirror/view'
 import { createBmdState, getOutline } from '@core/index'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { ipc, isTauri } from '@/lib/ipc'
+import { keyHint } from '@/lib/shortcuts'
 import { useTabs } from '@/stores/tabs'
 import { countWords, useUi } from '@/stores/ui'
 
@@ -178,7 +179,7 @@ onBeforeUnmount(() => {
     <div v-show="tabs.active" ref="host" class="editor-host" />
     <div v-if="!tabs.active" class="placeholder">
       <div class="mark">b</div>
-      <p>打开文件（⌘O）或新建（⌘N）开始写作</p>
+      <p>打开文件（{{ keyHint('⌘O') }}）或新建（{{ keyHint('⌘N') }}）开始写作</p>
     </div>
   </main>
 </template>

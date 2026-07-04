@@ -22,12 +22,21 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            // 不恢复 DECORATIONS：Windows 无边框由配置决定，避免旧状态把原生标题栏带回来
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::DECORATIONS,
+                )
+                .build(),
+        )
         .manage(watcher::WatchState::default())
         .manage(pdf::PdfState::default())
         .register_uri_scheme_protocol(pdf::PROTOCOL, pdf::handle_protocol)
         .invoke_handler(tauri::generate_handler![
             commands::scan_dir,
+            commands::search_text,
             commands::read_doc,
             commands::write_doc_atomic,
             commands::create_entry,
@@ -66,7 +75,11 @@ fn main() {
             .ok();
 
             #[cfg(target_os = "windows")]
-            window_vibrancy::apply_mica(&window, None).ok();
+            {
+                // 双保险：无论旧窗口状态如何，Windows 一律无边框（标题栏由前端自绘）
+                window.set_decorations(false).ok();
+                window_vibrancy::apply_mica(&window, None).ok();
+            }
 
             let _ = window;
 

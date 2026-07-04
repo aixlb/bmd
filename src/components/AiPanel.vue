@@ -4,6 +4,7 @@ import AiDiffModal from './AiDiffModal.vue'
 import AiMessage from './AiMessage.vue'
 import AiProviderModal from './AiProviderModal.vue'
 import { editorRegistry } from '@/lib/editorRegistry'
+import { keyHint } from '@/lib/shortcuts'
 import { useAi } from '@/stores/ai'
 import { useTabs } from '@/stores/tabs'
 import { useWorkspace } from '@/stores/workspace'
@@ -140,7 +141,7 @@ onMounted(() => {
       >
         🗑
       </button>
-      <button class="icon" title="关闭 ⌘J" @click="ai.panelVisible = false">×</button>
+      <button class="icon" :title="`关闭 ${keyHint('⌘J')}`" @click="ai.panelVisible = false">×</button>
     </header>
 
     <div v-if="ai.sessions.length > 1" class="session-row">

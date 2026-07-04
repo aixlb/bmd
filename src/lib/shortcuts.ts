@@ -10,6 +10,16 @@ import { useWorkspace } from '@/stores/workspace'
 
 export const isMac = navigator.platform.toUpperCase().includes('MAC')
 
+/** 平台化快捷键提示：mac 显示 ⌘⇧ 符号，其他平台转成 Ctrl+Shift+X */
+export function keyHint(macHint: string): string {
+  if (isMac) return macHint
+  return macHint
+    .replace(/⌘/g, 'Ctrl+')
+    .replace(/⇧/g, 'Shift+')
+    .replace(/⌥/g, 'Alt+')
+    .replace(/⌃/g, 'Ctrl+')
+}
+
 export function useShortcuts() {
   const ai = useAi()
   const tabs = useTabs()

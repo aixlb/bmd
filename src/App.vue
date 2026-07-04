@@ -8,6 +8,7 @@ import EditorHost from './components/EditorHost.vue'
 import QuickOpen from './components/QuickOpen.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import Sidebar from './components/Sidebar.vue'
+import SplashScreen from './components/SplashScreen.vue'
 import StatusBar from './components/StatusBar.vue'
 import TitleBar from './components/TitleBar.vue'
 import { ipc, isTauri } from '@/lib/ipc'
@@ -23,6 +24,7 @@ const tabs = useTabs()
 const ui = useUi()
 const workspace = useWorkspace()
 const ctxMenu = ref<InstanceType<typeof ContextMenu> | null>(null)
+const splashDone = ref(false)
 
 useShortcuts()
 
@@ -102,6 +104,7 @@ onMounted(async () => {
     <SettingsPanel />
     <QuickOpen />
     <ContextMenu ref="ctxMenu" />
+    <SplashScreen v-if="!splashDone" @done="splashDone = true" />
   </div>
 </template>
 

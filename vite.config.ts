@@ -19,6 +19,8 @@ export default defineConfig({
   build: {
     target: ['es2022', 'safari16'],
     sourcemap: false,
+    // 桌面端从本地磁盘加载：mermaid 内核 / 编辑器主包等懒加载大 chunk 属预期，阈值放宽
+    chunkSizeWarningLimit: 900,
   },
   test: {
     environment: 'jsdom',

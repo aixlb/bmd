@@ -53,11 +53,12 @@ export const useTabs = defineStore('tabs', {
     },
 
     newFile() {
+      // 初始不置 dirty：未编辑过的新文件关闭时不弹确认（真实编辑由 markDirty 标记）
       const tab: Tab = {
         id: nextId(),
         path: null,
         title: '未命名',
-        dirty: true,
+        dirty: false,
         mtimeMs: null,
         conflict: false,
         initialDoc: '',

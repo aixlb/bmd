@@ -202,6 +202,7 @@ async fn run_export<R: Runtime>(app: &AppHandle<R>, id: u64, out_path: &Path) ->
 }
 
 /// 轮询等待打印管线写完产物（macOS NSPrintOperation 无委托时的完成信号）
+#[cfg(target_os = "macos")]
 async fn wait_for_file(path: &Path, timeout: Duration) -> Result<(), String> {
     let deadline = std::time::Instant::now() + timeout;
     let mut last_len = 0u64;

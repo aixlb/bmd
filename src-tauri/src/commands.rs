@@ -85,6 +85,89 @@ pub async fn scan_dir(path: String) -> Result<Vec<Entry>, String> {
     Ok(entries)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub path: String,
+    pub name: String,
+    /// 首个匹配行（1-based；仅文件名匹配时为 0）
+    pub line: u32,
+    pub preview: String,
+    pub count: u32,
+}
+
+/// 工作区全文搜索（FR 侧栏搜索）：递归遍历 md/markdown 文件，
+/// 大小写不敏感子串匹配文件名与内容。隐藏项跳过，>5MB 文件跳过。
+/// 排序：文件名命中优先，其次按内容命中次数降序。
+#[tauri::command]
+pub async fn search_text(
+    root: String,
+    query: String,
+    limit: usize,
+) -> Result<Vec<SearchHit>, String> {
+    let dir = require_abs(&root)?;
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut hits: Vec<(bool, SearchHit)> = Vec::new();
+    let mut stack = vec![dir];
+    'walk: while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.filter_map(|e| e.ok()) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let p = e.path();
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if !is_markdown(&p) {
+                continue;
+            }
+            if fs::metadata(&p).map(|m| m.len() > 5 * 1024 * 1024).unwrap_or(true) {
+                continue;
+            }
+            let name_match = name.to_lowercase().contains(&q);
+            let Ok(content) = fs::read_to_string(&p) else { continue };
+            let mut count = 0u32;
+            let mut first: Option<(u32, String)> = None;
+            for (i, line) in content.lines().enumerate() {
+                let ll = line.to_lowercase();
+                let mut start = 0;
+                while let Some(idx) = ll[start..].find(&q) {
+                    count += 1;
+                    start += idx + q.len();
+                }
+                if count > 0 && first.is_none() {
+                    first = Some(((i + 1) as u32, line.trim().chars().take(120).collect()));
+                }
+            }
+            if count > 0 || name_match {
+                let (line, preview) = first.unwrap_or((0, String::new()));
+                hits.push((
+                    name_match,
+                    SearchHit {
+                        path: p.to_string_lossy().into_owned(),
+                        name,
+                        line,
+                        preview,
+                        count,
+                    },
+                ));
+                if hits.len() >= limit {
+                    break 'walk;
+                }
+            }
+        }
+    }
+    hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.count.cmp(&a.1.count)));
+    Ok(hits.into_iter().map(|(_, h)| h).collect())
+}
+
 #[tauri::command]
 pub async fn read_doc(path: String) -> Result<DocPayload, String> {
     let p = require_abs(&path)?;
@@ -295,6 +378,33 @@ mod tests {
         assert_eq!(names, ["zdir", "A.markdown", "b.md", "c.txt"]);
         assert!(entries[0].is_dir && !entries[0].is_md);
         assert!(entries[1].is_md && entries[2].is_md && !entries[3].is_md);
+    }
+
+    #[test]
+    fn search_text_content_name_order_and_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        fs::write(dir.path().join("a.md"), "Hello World\nsay hello, hello!").unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub").join("deep.md"), "hello 深层").unwrap();
+        fs::write(dir.path().join("note-hello.md"), "无关内容").unwrap();
+        fs::write(dir.path().join("skip.txt"), "hello hello").unwrap();
+        fs::write(dir.path().join(".hidden.md"), "hello").unwrap();
+
+        // 大小写不敏感；文件名命中优先，其余按命中次数降序；txt / 隐藏文件不参与
+        let hits = block(search_text(root.clone(), "HELLO".into(), 50)).unwrap();
+        let names: Vec<_> = hits.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["note-hello.md", "a.md", "deep.md"]);
+
+        let a = hits.iter().find(|h| h.name == "a.md").unwrap();
+        assert_eq!((a.count, a.line), (3, 1));
+        assert_eq!(a.preview, "Hello World");
+        // 仅文件名命中：line 0 / count 0
+        assert_eq!((hits[0].line, hits[0].count), (0, 0));
+
+        // 空白查询返回空；limit 截断
+        assert!(block(search_text(root.clone(), "  ".into(), 50)).unwrap().is_empty());
+        assert_eq!(block(search_text(root, "hello".into(), 1)).unwrap().len(), 1);
     }
 
     #[test]

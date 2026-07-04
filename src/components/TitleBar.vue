@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { useTabs } from '@/stores/tabs'
+import { useUi } from '@/stores/ui'
 import { isTauri } from '@/lib/ipc'
 import { isMac } from '@/lib/shortcuts'
 
 const tabs = useTabs()
+const ui = useUi()
 // macOS Overlay 模式保留原生红绿灯，左侧让位
 const trafficLightPad = isTauri && isMac
 </script>
@@ -33,6 +35,11 @@ const trafficLightPad = isTauri && isMac
     </div>
 
     <div class="drag-fill" data-tauri-drag-region />
+
+    <div class="tools">
+      <button title="明暗切换 ⌘⇧L" @click="ui.toggleTheme()">◐</button>
+      <button title="设置 ⌘," @click="ui.settingsVisible = true">⚙</button>
+    </div>
   </header>
 </template>
 
@@ -155,5 +162,28 @@ const trafficLightPad = isTauri && isMac
 .drag-fill {
   flex: 1;
   height: 100%;
+}
+
+.tools {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.tools button {
+  width: 28px;
+  height: 28px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--bmd-text-faint);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.tools button:hover {
+  color: var(--bmd-text);
+  background: color-mix(in srgb, var(--bmd-text) 8%, transparent);
 }
 </style>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Entry } from '@/lib/ipc'
+import { ipc, type Entry } from '@/lib/ipc'
+import { menu, type MenuItem } from '@/lib/menuBus'
 import { useTabs } from '@/stores/tabs'
 import { useWorkspace } from '@/stores/workspace'
 
@@ -19,6 +20,68 @@ function onClick() {
     tabs.openFile(props.entry.path)
   }
 }
+
+/** 右键菜单（FR-04） */
+function onContextMenu(e: MouseEvent) {
+  const m = menu()
+  if (!m) return
+  const entry = props.entry
+  const parentDir = entry.isDir ? entry.path : entry.path.slice(0, entry.path.lastIndexOf('/'))
+  const items: MenuItem[] = [
+    {
+      label: '新建文件',
+      action: async () => {
+        const name = await m.askText('新建文件', '未命名.md')
+        if (!name) return
+        const p = await ipc().createEntry(parentDir, name, false)
+        await workspace.refresh()
+        if (/\.(md|markdown)$/i.test(p)) await tabs.openFile(p)
+      },
+    },
+    {
+      label: '新建文件夹',
+      action: async () => {
+        const name = await m.askText('新建文件夹', '新文件夹')
+        if (!name) return
+        await ipc().createEntry(parentDir, name, true)
+        await workspace.refresh()
+      },
+    },
+    {
+      label: '重命名',
+      action: async () => {
+        const name = await m.askText('重命名', entry.name)
+        if (!name || name === entry.name) return
+        const newPath = await ipc().renameEntry(entry.path, name)
+        const tab = tabs.tabs.find((t) => t.path === entry.path)
+        if (tab) {
+          tab.path = newPath
+          tab.title = name
+        }
+        await workspace.refresh()
+      },
+    },
+    {
+      label: '在系统中显示',
+      action: () => ipc().revealInOs(entry.path),
+    },
+    {
+      label: '删除（移入回收站）',
+      danger: true,
+      action: async () => {
+        if (!(await ipc().confirm(`把「${entry.name}」移入回收站？`, '删除'))) return
+        await ipc().trashEntry(entry.path)
+        const tab = tabs.tabs.find((t) => t.path === entry.path)
+        if (tab) {
+          tab.dirty = false
+          await tabs.closeTab(tab.id)
+        }
+        await workspace.refresh()
+      },
+    },
+  ]
+  m.showMenu(e.clientX, e.clientY, items)
+}
 </script>
 
 <template>
@@ -33,6 +96,7 @@ function onClick() {
       }"
       :style="{ paddingLeft: `${10 + depth * 14}px` }"
       @click="onClick"
+      @contextmenu.prevent="onContextMenu"
     >
       <span v-if="entry.isDir" class="chevron" :class="{ open: expanded }">›</span>
       <span v-else class="icon">{{ entry.isMd ? '¶' : '·' }}</span>

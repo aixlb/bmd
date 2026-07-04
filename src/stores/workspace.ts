@@ -45,6 +45,30 @@ export const useWorkspace = defineStore('workspace', {
       if (this.expanded[dir]) await this.ensureChildren(dir)
     },
 
+    /** 收集工作区全部 markdown 文件（QuickOpen 用，BFS 限深） */
+    async collectAllMd(): Promise<string[]> {
+      if (!this.root) return []
+      const out: string[] = []
+      let frontier = [this.root]
+      for (let depth = 0; depth < 8 && frontier.length && out.length < 2000; depth++) {
+        const next: string[] = []
+        for (const dir of frontier) {
+          let entries
+          try {
+            entries = await ipc().scanDir(dir)
+          } catch {
+            continue
+          }
+          for (const e of entries) {
+            if (e.isDir) next.push(e.path)
+            else if (e.isMd) out.push(e.path)
+          }
+        }
+        frontier = next
+      }
+      return out.sort()
+    },
+
     /** 重扫已加载的目录（外部变更/手动刷新） */
     async refresh() {
       const dirs = Object.keys(this.children)

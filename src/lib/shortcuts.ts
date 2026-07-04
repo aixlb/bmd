@@ -34,6 +34,14 @@ export function useShortcuts() {
     }
 
     switch (key) {
+      case 'p':
+        e.preventDefault()
+        ui.quickOpenVisible = true
+        break
+      case ',':
+        e.preventDefault()
+        ui.settingsVisible = true
+        break
       case 's':
         e.preventDefault()
         if (tabs.activeId) await tabs.saveTab(tabs.activeId, { saveAs: e.shiftKey })

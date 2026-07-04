@@ -19,9 +19,9 @@ let outlineTimer: ReturnType<typeof setTimeout> | null = null
 const autosaveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function openLink(url: string) {
+  if (!/^https?:\/\//.test(url)) return
   if (isTauri) {
-    // M4 接 shell/opener 插件；当前静默忽略非法协议
-    if (/^https?:\/\//.test(url)) void import('@tauri-apps/api/core').then(() => {})
+    void import('@tauri-apps/plugin-opener').then((m) => m.openUrl(url))
   } else {
     window.open(url, '_blank', 'noopener')
   }
@@ -45,6 +45,7 @@ if (isTauri) {
 }
 
 function scheduleAutosave(tabId: string) {
+  if (!ui.autosaveEnabled) return
   const prev = autosaveTimers.get(tabId)
   if (prev) clearTimeout(prev)
   autosaveTimers.set(
@@ -248,7 +249,7 @@ onBeforeUnmount(() => {
 }
 
 .editor-host :deep(.cm-content) {
-  max-width: 760px;
+  max-width: var(--bmd-line-width, 760px);
   margin: 0 auto;
   padding-left: 32px;
   padding-right: 32px;

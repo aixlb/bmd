@@ -200,9 +200,39 @@ export const bmdBaseTheme = EditorView.baseTheme({
   // --- 表格 ---
   '.bmd-table-wrap': {
     display: 'block',
+    position: 'relative',
     overflowX: 'auto',
-    padding: '4px 0',
+    padding: '26px 0 4px',
+  },
+  '.bmd-table-bar': {
+    position: 'absolute',
+    top: '0',
+    right: '0',
+    display: 'flex',
+    gap: '3px',
+    opacity: '0',
+    transition: 'opacity 140ms',
+  },
+  '.bmd-table-wrap:hover .bmd-table-bar, .bmd-table-wrap:focus-within .bmd-table-bar': {
+    opacity: '1',
+  },
+  '.bmd-table-bar button': {
+    padding: '1px 8px',
+    font: 'inherit',
+    fontSize: '11px',
+    color: 'var(--bmd-text-faint)',
+    background: 'var(--bmd-panel)',
+    border: '1px solid var(--bmd-border)',
+    borderRadius: '5px',
     cursor: 'pointer',
+  },
+  '.bmd-table-bar button:hover': {
+    color: 'var(--bmd-text)',
+    borderColor: 'var(--bmd-text-faint)',
+  },
+  '.bmd-table th:focus, .bmd-table td:focus': {
+    outline: '2px solid color-mix(in srgb, var(--bmd-accent-a) 55%, transparent)',
+    outlineOffset: '-2px',
   },
   '.bmd-table': {
     borderCollapse: 'collapse',

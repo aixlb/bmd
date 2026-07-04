@@ -16,6 +16,10 @@ export const useUi = defineStore('ui', {
     sidebarView: 'files' as 'files' | 'outline',
     theme: initialTheme(),
     fontSize: Number(localStorage.getItem('bmd.fontSize')) || 16,
+    lineWidth: Number(localStorage.getItem('bmd.lineWidth')) || 760,
+    autosaveEnabled: localStorage.getItem('bmd.autosave') !== 'off',
+    settingsVisible: false,
+    quickOpenVisible: false,
     cursor: { line: 1, col: 1 },
     cursorPos: 0,
     counts: { words: 0, chars: 0 },
@@ -45,6 +49,14 @@ export const useUi = defineStore('ui', {
     applyFontSize() {
       document.documentElement.style.setProperty('--bmd-font-size', `${this.fontSize}px`)
       localStorage.setItem('bmd.fontSize', String(this.fontSize))
+    },
+    applyLineWidth() {
+      document.documentElement.style.setProperty('--bmd-line-width', `${this.lineWidth}px`)
+      localStorage.setItem('bmd.lineWidth', String(this.lineWidth))
+    },
+    setAutosave(on: boolean) {
+      this.autosaveEnabled = on
+      localStorage.setItem('bmd.autosave', on ? 'on' : 'off')
     },
     zoom(delta: number) {
       this.fontSize = delta === 0 ? 16 : Math.min(24, Math.max(12, this.fontSize + delta))

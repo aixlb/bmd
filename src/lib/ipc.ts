@@ -32,11 +32,15 @@ export interface Ipc {
   saveSession(session: Session): Promise<void>
   pickFolder(): Promise<string | null>
   pickFile(): Promise<string | null>
-  pickSavePath(defaultName: string): Promise<string | null>
+  pickSavePath(
+    defaultName: string,
+    filter?: { name: string; extensions: string[] },
+  ): Promise<string | null>
   confirm(message: string, title?: string): Promise<boolean>
   savePastedImage(docPath: string, dataB64: string, ext: string): Promise<string>
   startWatch(root: string): Promise<void>
   onFsChanged(cb: (paths: string[]) => void): Promise<() => void>
+  initialFiles(): Promise<string[]>
 }
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -71,11 +75,11 @@ function tauriIpc(): Ipc {
       })
       return typeof r === 'string' ? r : null
     },
-    pickSavePath: async (defaultName) => {
+    pickSavePath: async (defaultName, filter) => {
       const { save } = await import('@tauri-apps/plugin-dialog')
       return save({
         defaultPath: defaultName,
-        filters: [{ name: 'Markdown', extensions: ['md'] }],
+        filters: [filter ?? { name: 'Markdown', extensions: ['md'] }],
       })
     },
     confirm: async (message, title) => {
@@ -89,6 +93,7 @@ function tauriIpc(): Ipc {
       const { listen } = await import('@tauri-apps/api/event')
       return listen<string[]>('fs-changed', (e) => cb(e.payload))
     },
+    initialFiles: () => inv('initial_files'),
   }
 }
 
@@ -249,6 +254,9 @@ graph LR
     async startWatch() {},
     async onFsChanged() {
       return () => {}
+    },
+    async initialFiles() {
+      return []
     },
   }
 }

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6d8dff"/>
+      <stop offset="1" stop-color="#58c7c0"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)"/>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#sheen)"/>
+  <!-- 字标：加粗小写 b（描边风格，呼应 markdown 的 ** 加粗） -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round">
+    <path d="M 400 280 L 400 744" stroke-width="88"/>
+    <path d="M 400 560 A 132 132 0 1 1 400 700" stroke-width="88"/>
+  </g>
+  <!-- markdown 下箭头点缀 -->
+  <g stroke="#ffffff" stroke-width="40" stroke-linecap="round" fill="none" opacity="0.9">
+    <path d="M 664 560 L 664 716 M 604 660 L 664 722 L 724 660"/>
+  </g>
+</svg>

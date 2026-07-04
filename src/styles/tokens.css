@@ -1,0 +1,60 @@
+/* bmd 设计 Token（DESIGN.md §8） */
+
+:root {
+  --bmd-font-prose: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --bmd-font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --bmd-font-size: 16px;
+
+  --bmd-accent-a: #6d8dff;
+  --bmd-accent-b: #58c7c0;
+  --bmd-accent: var(--bmd-accent-a);
+  --bmd-accent-gradient: linear-gradient(120deg, var(--bmd-accent-a), var(--bmd-accent-b));
+  --bmd-danger: #f06c75;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bmd-bg: #0e1016;
+  --bmd-panel: #161a22;
+  --bmd-border: rgba(255, 255, 255, 0.06);
+  --bmd-text: #e6e9ef;
+  --bmd-text-dim: #9aa3b2;
+  --bmd-text-faint: #5c667a;
+  --bmd-selection: rgba(109, 141, 255, 0.22);
+  --bmd-code-bg: #12151d;
+  --bmd-link: #8fa8ff;
+  --bmd-link-underline: rgba(143, 168, 255, 0.35);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bmd-bg: #ffffff;
+  --bmd-panel: #f6f7f9;
+  --bmd-border: rgba(28, 35, 51, 0.09);
+  --bmd-text: #1c2333;
+  --bmd-text-dim: #5a6377;
+  --bmd-text-faint: #9aa3b2;
+  --bmd-selection: rgba(109, 141, 255, 0.18);
+  --bmd-code-bg: #f1f3f6;
+  --bmd-link: #4a6cf0;
+  --bmd-link-underline: rgba(74, 108, 240, 0.3);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--bmd-font-prose);
+  background: var(--bmd-bg);
+  color: var(--bmd-text);
+  overflow: hidden;
+}

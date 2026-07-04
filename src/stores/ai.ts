@@ -82,6 +82,7 @@ export const useAi = defineStore('ai', {
     includeSelection: true,
     mentionFiles: [] as string[],
     providerModalVisible: false,
+    skillModalVisible: false,
     // ---- RAG（M6/FR-39） ----
     ragEnabled: localStorage.getItem('bmd.ai.rag') === 'on',
     /** 嵌入模型配置；null = BM25 词法兜底 */

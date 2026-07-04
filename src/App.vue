@@ -2,12 +2,14 @@
 import { onMounted, watch } from 'vue'
 import { ref } from 'vue'
 import { preheatRenderers } from '@core/index'
+import ActivityBar from './components/ActivityBar.vue'
 import AiPanel from './components/AiPanel.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import EditorHost from './components/EditorHost.vue'
 import QuickOpen from './components/QuickOpen.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import Sidebar from './components/Sidebar.vue'
+import SkillModal from './components/SkillModal.vue'
 import SplashScreen from './components/SplashScreen.vue'
 import StatusBar from './components/StatusBar.vue'
 import TitleBar from './components/TitleBar.vue'
@@ -92,6 +94,7 @@ onMounted(async () => {
   <div class="app">
     <TitleBar />
     <div class="body">
+      <ActivityBar />
       <Transition name="sidebar">
         <Sidebar v-if="ui.sidebarVisible" />
       </Transition>
@@ -102,6 +105,7 @@ onMounted(async () => {
     </div>
     <StatusBar />
     <SettingsPanel />
+    <SkillModal />
     <QuickOpen />
     <ContextMenu ref="ctxMenu" />
     <SplashScreen v-if="!splashDone" @done="splashDone = true" />

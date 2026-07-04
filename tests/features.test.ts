@@ -1,10 +1,11 @@
-// 本轮功能回归：全文搜索（searchText）、新建文件关闭策略、快捷键提示平台化
+// 本轮功能回归：全文搜索（searchText）、新建文件关闭策略、快捷键提示平台化、自定义技能
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { EditorState } from '@codemirror/state'
 import { createMockIpc, setIpc, type Ipc } from '../src/lib/ipc'
 import { editorRegistry } from '../src/lib/editorRegistry'
 import { isMac, keyHint } from '../src/lib/shortcuts'
+import { BUILTIN_COMMANDS, useAi } from '../src/stores/ai'
 import { useTabs } from '../src/stores/tabs'
 
 let mock: Ipc
@@ -72,6 +73,32 @@ describe('新建文件关闭策略（FR：未编辑不弹确认）', () => {
     expect(await tabs.closeTab(t.id)).toBe(false)
     expect(mock.confirm).toHaveBeenCalledOnce()
     expect(tabs.tabs).toHaveLength(1)
+  })
+})
+
+describe('自定义技能（QuickCommand CRUD 与持久化）', () => {
+  it('commands = 内置 + 自定义；保存落 localStorage，新 store 实例可恢复', () => {
+    localStorage.removeItem('bmd.ai.commands')
+    const ai = useAi()
+    expect(ai.commands.map((c) => c.id)).toEqual(BUILTIN_COMMANDS.map((c) => c.id))
+
+    ai.customCommands.push({ id: 'skill-x', label: '去 AI 味', prompt: '改写：{sel}' })
+    ai.saveCustomCommands()
+    expect(ai.commands.at(-1)!.label).toBe('去 AI 味')
+
+    // 新 pinia 实例（模拟重启）从 localStorage 恢复
+    setActivePinia(createPinia())
+    const ai2 = useAi()
+    expect(ai2.customCommands).toEqual([{ id: 'skill-x', label: '去 AI 味', prompt: '改写：{sel}' }])
+
+    ai2.customCommands = ai2.customCommands.filter((c) => c.id !== 'skill-x')
+    ai2.saveCustomCommands()
+    expect(JSON.parse(localStorage.getItem('bmd.ai.commands')!)).toEqual([])
+    localStorage.removeItem('bmd.ai.commands')
+  })
+
+  it('内置技能不可被自定义列表污染：builtin 标记存在', () => {
+    for (const c of BUILTIN_COMMANDS) expect(c.builtin).toBe(true)
   })
 })
 

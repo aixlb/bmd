@@ -34,6 +34,9 @@ export interface Ipc {
   pickFile(): Promise<string | null>
   pickSavePath(defaultName: string): Promise<string | null>
   confirm(message: string, title?: string): Promise<boolean>
+  savePastedImage(docPath: string, dataB64: string, ext: string): Promise<string>
+  startWatch(root: string): Promise<void>
+  onFsChanged(cb: (paths: string[]) => void): Promise<() => void>
 }
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -79,6 +82,13 @@ function tauriIpc(): Ipc {
       const { ask } = await import('@tauri-apps/plugin-dialog')
       return ask(message, { title: title ?? 'bmd' })
     },
+    savePastedImage: (docPath, dataB64, ext) =>
+      inv('save_pasted_image', { docPath, dataB64, ext }),
+    startWatch: (root) => inv('start_watch', { path: root }),
+    onFsChanged: async (cb) => {
+      const { listen } = await import('@tauri-apps/api/event')
+      return listen<string[]>('fs-changed', (e) => cb(e.payload))
+    },
   }
 }
 
@@ -119,6 +129,30 @@ function hello(name: string): string {
 \`\`\`
 
 ---
+
+## 数学公式
+
+行内公式 $e = mc^2$ 与块级公式：
+
+$$
+\\int_{-\\infty}^{\\infty} e^{-x^2} \\, dx = \\sqrt{\\pi}
+$$
+
+## Mermaid 图表
+
+\`\`\`mermaid
+graph LR
+  A[写作] --> B{满意?}
+  B -->|是| C[发布]
+  B -->|否| A
+\`\`\`
+
+## 表格
+
+| 里程碑 | 内容 | 状态 |
+| :-- | :-: | --: |
+| M2 | 内核完备 | ✅ |
+| M3 | 高级渲染 | 🚧 |
 
 ## 图片
 
@@ -208,7 +242,20 @@ function hello(name: string): string {
     async confirm(message) {
       return window.confirm(message)
     },
+    async savePastedImage(docPath, _dataB64, ext) {
+      const stem = nameNoExt(docPath)
+      return `assets/${stem}/img-${++clock}.${ext}`
+    },
+    async startWatch() {},
+    async onFsChanged() {
+      return () => {}
+    },
   }
+}
+
+function nameNoExt(p: string) {
+  const name = p.slice(p.lastIndexOf('/') + 1)
+  return name.replace(/\.\w+$/, '')
 }
 
 let current: Ipc = isTauri ? tauriIpc() : createMockIpc()

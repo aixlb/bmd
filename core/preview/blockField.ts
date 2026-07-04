@@ -2,16 +2,20 @@ import { syntaxTree } from '@codemirror/language'
 import { StateField, type EditorState, type Range } from '@codemirror/state'
 import { Decoration, type DecorationSet, EditorView, WidgetType } from '@codemirror/view'
 import { bmdConfig } from '../config'
+import { KatexWidget, MermaidWidget, TableWidget } from './widgets'
 
-// 影响纵向布局的 widget（分割线、图片）必须由 StateField 提供（CM6 约束）。
-// 结构（位置清单）只依赖文档内容；reveal 依赖选区——两者变化都重derive装饰，
-// 但 derive 只是对结构数组的一次线性走查，与文档长度无关。
+// 影响纵向布局的 widget（分割线、图片、公式、Mermaid、表格）由 StateField 提供
+// （CM6 约束）。结构（位置清单）只依赖文档内容；reveal 依赖选区——两者变化都
+// 重新 derive 装饰，derive 只是对结构数组的线性走查，与文档长度无关。
+
+type BlockKind = 'hr' | 'image' | 'mathInline' | 'mathBlock' | 'mermaid' | 'table'
 
 interface BlockEntry {
   from: number
   to: number
-  type: 'hr' | 'image'
-  src?: string
+  type: BlockKind
+  /** image: src；math: 表达式；mermaid: 代码；table: 源码 */
+  payload: string
   alt?: string
 }
 
@@ -60,26 +64,70 @@ class ImageWidget extends WidgetType {
   }
 }
 
+function stripMath(state: EditorState, from: number, to: number): string {
+  return state.doc
+    .sliceString(from, to)
+    .replace(/^\$\$?/, '')
+    .replace(/\$\$?$/, '')
+    .trim()
+}
+
 function scanBlocks(state: EditorState, from: number, to: number, out: BlockEntry[]) {
   syntaxTree(state).iterate({
     from,
     to,
     enter(node) {
-      if (node.name === 'HorizontalRule') {
-        out.push({ from: node.from, to: node.to, type: 'hr' })
-        return false
-      }
-      if (node.name === 'Image') {
-        const n = node.node
-        const urlNode = n.getChild('URL')
-        const marks = n.getChildren('LinkMark')
-        const src = urlNode ? state.doc.sliceString(urlNode.from, urlNode.to) : ''
-        const alt =
-          marks.length >= 2 && marks[1].from > marks[0].to
-            ? state.doc.sliceString(marks[0].to, marks[1].from)
-            : ''
-        if (src) out.push({ from: node.from, to: node.to, type: 'image', src, alt })
-        return false
+      switch (node.name) {
+        case 'HorizontalRule':
+          out.push({ from: node.from, to: node.to, type: 'hr', payload: '' })
+          return false
+        case 'Image': {
+          const n = node.node
+          const urlNode = n.getChild('URL')
+          const marks = n.getChildren('LinkMark')
+          const src = urlNode ? state.doc.sliceString(urlNode.from, urlNode.to) : ''
+          const alt =
+            marks.length >= 2 && marks[1].from > marks[0].to
+              ? state.doc.sliceString(marks[0].to, marks[1].from)
+              : ''
+          if (src) out.push({ from: node.from, to: node.to, type: 'image', payload: src, alt })
+          return false
+        }
+        case 'InlineMath':
+          out.push({
+            from: node.from,
+            to: node.to,
+            type: 'mathInline',
+            payload: stripMath(state, node.from, node.to),
+          })
+          return false
+        case 'BlockMath':
+          out.push({
+            from: node.from,
+            to: node.to,
+            type: 'mathBlock',
+            payload: stripMath(state, node.from, node.to),
+          })
+          return false
+        case 'FencedCode': {
+          const info = node.node.getChild('CodeInfo')
+          const lang = info ? state.doc.sliceString(info.from, info.to).trim() : ''
+          if (lang === 'mermaid') {
+            const codeText = node.node.getChild('CodeText')
+            const code = codeText ? state.doc.sliceString(codeText.from, codeText.to) : ''
+            out.push({ from: node.from, to: node.to, type: 'mermaid', payload: code })
+            return false
+          }
+          return false
+        }
+        case 'Table':
+          out.push({
+            from: node.from,
+            to: node.to,
+            type: 'table',
+            payload: state.doc.sliceString(node.from, node.to),
+          })
+          return false
       }
       return undefined
     },
@@ -92,29 +140,68 @@ function fullScan(state: EditorState): BlockEntry[] {
   return out
 }
 
+const revealMark = Decoration.mark({ class: 'bmd-syntax' })
+
 function derive(state: EditorState, entries: BlockEntry[]): DecorationSet {
   const config = state.facet(bmdConfig)
   const deco: Range<Decoration>[] = []
   for (const e of entries) {
     const line = state.doc.lineAt(e.from)
-    const lineEnd = state.doc.lineAt(e.to).to
-    // 分割线按行 reveal；行内图片按字符区间严格 reveal（光标在同行文字处不展开）
-    const revealed =
-      e.type === 'hr'
-        ? state.selection.ranges.some((r) => r.from <= lineEnd && r.to >= line.from)
-        : state.selection.ranges.some((r) => r.from < e.to && r.to > e.from)
+    const lineEnd = state.doc.lineAt(Math.min(e.to, state.doc.length)).to
+    // 行内元素（图片/行内公式）按字符区间严格 reveal；块级按行 reveal
+    const inlineKind = e.type === 'image' || e.type === 'mathInline'
+    const revealed = inlineKind
+      ? state.selection.ranges.some((r) => r.from < e.to && r.to > e.from)
+      : state.selection.ranges.some((r) => r.from <= lineEnd && r.to >= line.from)
+
     if (revealed) {
-      deco.push(Decoration.mark({ class: 'bmd-syntax' }).range(e.from, e.to))
+      if (inlineKind || e.type === 'hr' || e.type === 'mathBlock') {
+        deco.push(revealMark.range(e.from, e.to))
+      }
+      // mermaid/table 的 reveal 态交给 inlinePreview 的代码块/表格源码样式
       continue
     }
-    if (e.type === 'hr') {
-      deco.push(Decoration.replace({ widget: hrWidget }).range(e.from, e.to))
-    } else {
-      deco.push(
-        Decoration.replace({
-          widget: new ImageWidget(e.src!, e.alt ?? '', config.resolveImageSrc(e.src!)),
-        }).range(e.from, e.to),
-      )
+
+    switch (e.type) {
+      case 'hr':
+        deco.push(Decoration.replace({ widget: hrWidget }).range(e.from, e.to))
+        break
+      case 'image':
+        deco.push(
+          Decoration.replace({
+            widget: new ImageWidget(e.payload, e.alt ?? '', config.resolveImageSrc(e.payload)),
+          }).range(e.from, e.to),
+        )
+        break
+      case 'mathInline':
+        deco.push(
+          Decoration.replace({ widget: new KatexWidget(e.payload, false) }).range(e.from, e.to),
+        )
+        break
+      case 'mathBlock':
+        deco.push(
+          Decoration.replace({ widget: new KatexWidget(e.payload, true), block: true }).range(
+            line.from,
+            lineEnd,
+          ),
+        )
+        break
+      case 'mermaid':
+        deco.push(
+          Decoration.replace({ widget: new MermaidWidget(e.payload), block: true }).range(
+            line.from,
+            lineEnd,
+          ),
+        )
+        break
+      case 'table':
+        deco.push(
+          Decoration.replace({ widget: new TableWidget(e.payload), block: true }).range(
+            line.from,
+            lineEnd,
+          ),
+        )
+        break
     }
   }
   return Decoration.set(deco, true)
@@ -136,7 +223,6 @@ export const blockPreviewField = StateField.define<BlockState>({
     let structureChanged = false
 
     if (tr.docChanged) {
-      // 位置映射 + 受影响整行区间重扫
       const spans: { from: number; to: number }[] = []
       tr.changes.iterChangedRanges((_fa, _ta, fb, tb) => {
         const from = tr.state.doc.lineAt(fb).from
@@ -158,7 +244,6 @@ export const blockPreviewField = StateField.define<BlockState>({
       entries.sort((a, b) => a.from - b.from)
       structureChanged = true
     } else if (syntaxTree(tr.state) !== syntaxTree(tr.startState)) {
-      // 异步解析推进（大文档首次打开）
       entries = fullScan(tr.state)
       structureChanged = true
     }

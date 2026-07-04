@@ -167,4 +167,139 @@ export const bmdBaseTheme = EditorView.baseTheme({
     border: '1px dashed var(--bmd-danger)',
     borderRadius: '6px',
   },
+
+  // --- 数学公式 ---
+  '.bmd-math-inline': { color: 'var(--bmd-text)' },
+  '.bmd-math-block': {
+    display: 'block',
+    padding: '10px 0',
+    textAlign: 'center',
+    cursor: 'pointer',
+    overflowX: 'auto',
+  },
+  '.bmd-render-error': { color: 'var(--bmd-danger)', fontSize: '0.85em' },
+
+  // --- Mermaid ---
+  '.bmd-mermaid': {
+    display: 'block',
+    padding: '12px',
+    textAlign: 'center',
+    cursor: 'pointer',
+    background: 'color-mix(in srgb, var(--bmd-text) 3%, transparent)',
+    borderRadius: '10px',
+  },
+  '.bmd-mermaid svg': { maxWidth: '100%' },
+  '.bmd-render-error-card': {
+    color: 'var(--bmd-danger)',
+    fontFamily: 'var(--bmd-font-mono)',
+    fontSize: '0.82em',
+    textAlign: 'left',
+    border: '1px dashed var(--bmd-danger)',
+  },
+
+  // --- 表格 ---
+  '.bmd-table-wrap': {
+    display: 'block',
+    overflowX: 'auto',
+    padding: '4px 0',
+    cursor: 'pointer',
+  },
+  '.bmd-table': {
+    borderCollapse: 'collapse',
+    width: '100%',
+    fontSize: '0.95em',
+  },
+  '.bmd-table th, .bmd-table td': {
+    border: '1px solid var(--bmd-border)',
+    padding: '7px 12px',
+  },
+  '.bmd-table th': {
+    background: 'color-mix(in srgb, var(--bmd-text) 5%, transparent)',
+    fontWeight: '600',
+  },
+  '.bmd-table tbody tr:nth-child(even)': {
+    background: 'color-mix(in srgb, var(--bmd-text) 2.5%, transparent)',
+  },
+
+  // --- 浮动工具条 ---
+  '.cm-tooltip.cm-tooltip-above:has(.bmd-sel-toolbar), .cm-tooltip:has(.bmd-sel-toolbar)': {
+    background: 'transparent',
+    border: 'none',
+  },
+  '.bmd-sel-toolbar': {
+    display: 'flex',
+    gap: '2px',
+    padding: '4px',
+    background: 'var(--bmd-panel)',
+    border: '1px solid var(--bmd-border)',
+    borderRadius: '8px',
+    boxShadow: '0 6px 24px rgba(0,0,0,.25)',
+  },
+  '.bmd-sel-toolbar button': {
+    minWidth: '26px',
+    height: '26px',
+    padding: '0 6px',
+    font: 'inherit',
+    fontSize: '13px',
+    fontWeight: '600',
+    color: 'var(--bmd-text-dim)',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: '5px',
+    cursor: 'pointer',
+  },
+  '.bmd-sel-toolbar button:hover': {
+    color: 'var(--bmd-text)',
+    background: 'color-mix(in srgb, var(--bmd-text) 9%, transparent)',
+  },
+
+  // --- 查找替换面板 / Slash 菜单 ---
+  '.cm-panels': {
+    background: 'var(--bmd-panel)',
+    color: 'var(--bmd-text)',
+    borderBottom: '1px solid var(--bmd-border)',
+  },
+  '.cm-panel.cm-search': { padding: '8px 12px', fontSize: '12.5px' },
+  '.cm-panel.cm-search input, .cm-panel.cm-search button': {
+    font: 'inherit',
+    color: 'var(--bmd-text)',
+    background: 'var(--bmd-bg)',
+    border: '1px solid var(--bmd-border)',
+    borderRadius: '6px',
+    padding: '3px 8px',
+    margin: '0 3px',
+  },
+  '.cm-panel.cm-search button:hover': { borderColor: 'var(--bmd-text-faint)' },
+  '.cm-panel.cm-search label': { color: 'var(--bmd-text-dim)' },
+  '.cm-panel.cm-search [name="close"]': {
+    color: 'var(--bmd-text-dim)',
+    border: 'none',
+    background: 'transparent',
+    fontSize: '16px',
+  },
+  '.cm-searchMatch': { background: 'color-mix(in srgb, var(--bmd-accent-a) 28%, transparent)' },
+  '.cm-searchMatch-selected': {
+    background: 'color-mix(in srgb, var(--bmd-accent-b) 45%, transparent)',
+  },
+  '.cm-tooltip.cm-tooltip-autocomplete': {
+    background: 'var(--bmd-panel)',
+    border: '1px solid var(--bmd-border)',
+    borderRadius: '10px',
+    boxShadow: '0 8px 30px rgba(0,0,0,.3)',
+    padding: '4px',
+  },
+  '.cm-tooltip-autocomplete ul li': {
+    padding: '5px 10px',
+    borderRadius: '6px',
+    color: 'var(--bmd-text)',
+  },
+  '.cm-tooltip-autocomplete ul li[aria-selected]': {
+    background: 'color-mix(in srgb, var(--bmd-accent-a) 22%, transparent)',
+    color: 'var(--bmd-text)',
+  },
+  '.cm-completionDetail': {
+    color: 'var(--bmd-text-faint)',
+    fontStyle: 'normal',
+    marginLeft: '10px',
+  },
 })

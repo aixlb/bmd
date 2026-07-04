@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, watch } from 'vue'
+import { preheatRenderers } from '@core/index'
 import EditorHost from './components/EditorHost.vue'
 import Sidebar from './components/Sidebar.vue'
 import StatusBar from './components/StatusBar.vue'
@@ -21,6 +22,14 @@ let sessionTimer: ReturnType<typeof setTimeout> | null = null
 onMounted(async () => {
   ui.applyTheme()
   ui.applyFontSize()
+  preheatRenderers()
+
+  // 外部变更 → 文件树刷新 + 打开文档的重载/冲突流（FR-05/21）
+  void ipc().onFsChanged(async (paths) => {
+    await workspace.refresh()
+    await tabs.handleExternalChanges(paths)
+  })
+
   const session = await ipc().loadSession()
   if (session?.root) await workspace.openFolder(session.root)
   if (session) await tabs.restoreSession(session)

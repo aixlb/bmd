@@ -36,6 +36,11 @@ export const useUi = defineStore('ui', {
     toggleTheme() {
       this.theme = this.theme === 'dark' ? 'light' : 'dark'
       this.applyTheme()
+      // Mermaid 等 widget 按新主题重渲染
+      void import('@/lib/editorRegistry').then(async ({ editorRegistry }) => {
+        const view = editorRegistry.getActiveView()
+        if (view) (await import('@core/index')).refreshPreview(view)
+      })
     },
     applyFontSize() {
       document.documentElement.style.setProperty('--bmd-font-size', `${this.fontSize}px`)

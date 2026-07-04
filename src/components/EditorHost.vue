@@ -4,7 +4,7 @@ import { EditorState } from '@codemirror/state'
 import { EditorView, type ViewUpdate } from '@codemirror/view'
 import { createBmdState, getOutline } from '@core/index'
 import { editorRegistry } from '@/lib/editorRegistry'
-import { isTauri } from '@/lib/ipc'
+import { ipc, isTauri } from '@/lib/ipc'
 import { useTabs } from '@/stores/tabs'
 import { countWords, useUi } from '@/stores/ui'
 
@@ -68,7 +68,12 @@ function pushOutline(state: EditorState) {
 function trackUpdate(tabId: string, update: ViewUpdate) {
   if (update.docChanged) {
     editorRegistry.set(tabId, update.state)
-    scheduleAutosave(tabId)
+    // 外部重载（fs-changed 静默刷新）不算用户编辑
+    const external = update.transactions.every((tr) => tr.isUserEvent('external'))
+    if (!external) {
+      tabs.markDirty(tabId)
+      scheduleAutosave(tabId)
+    }
     pushOutline(update.state)
     if (countTimer) clearTimeout(countTimer)
     countTimer = setTimeout(() => {
@@ -81,12 +86,33 @@ function trackUpdate(tabId: string, update: ViewUpdate) {
   ui.cursorPos = head
 }
 
+/** 粘贴图片 → base64 → Rust 落盘 assets/，返回相对路径（FR-25/26） */
+function makePasteHandler(tabPath: string | null) {
+  return async (file: File): Promise<string | null> => {
+    const path = tabPath ?? tabs.active?.path
+    if (!path) return null // 未命名文件先保存才能贴图
+    const buf = new Uint8Array(await file.arrayBuffer())
+    let bin = ''
+    const CHUNK = 0x8000
+    for (let i = 0; i < buf.length; i += CHUNK) {
+      bin += String.fromCharCode(...buf.subarray(i, i + CHUNK))
+    }
+    const ext = (file.type.split('/')[1] ?? 'png').replace('jpeg', 'jpg').replace(/\+.*$/, '')
+    try {
+      return await ipc().savePastedImage(path, btoa(bin), ext)
+    } catch (e) {
+      console.error('[bmd] 图片保存失败', e)
+      return null
+    }
+  }
+}
+
 function buildState(tabId: string, doc: string, tabPath: string | null): EditorState {
   return createBmdState(doc, {
-    onDocChanged: () => tabs.markDirty(tabId),
     onViewUpdate: (u) => trackUpdate(tabId, u),
     onOpenLink: openLink,
     resolveImageSrc: makeImageResolver(tabPath),
+    onPasteImage: makePasteHandler(tabPath),
   })
 }
 
@@ -141,6 +167,13 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="editor-wrap">
+    <Transition name="banner">
+      <div v-if="tabs.active?.conflict" class="conflict-banner">
+        <span>⚠ 「{{ tabs.active.title }}」在磁盘上已被其他程序修改</span>
+        <button @click="tabs.keepLocal(tabs.active!.id)">保留本地版本</button>
+        <button @click="tabs.reloadFromDisk(tabs.active!.id)">加载磁盘版本</button>
+      </div>
+    </Transition>
     <div v-show="tabs.active" ref="host" class="editor-host" />
     <div v-if="!tabs.active" class="placeholder">
       <div class="mark">b</div>
@@ -156,6 +189,50 @@ onBeforeUnmount(() => {
   min-width: 0;
   height: 100%;
   background: var(--bmd-bg);
+}
+
+.conflict-banner {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  color: var(--bmd-text);
+  background: var(--bmd-panel);
+  border: 1px solid color-mix(in srgb, var(--bmd-danger) 50%, transparent);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+}
+
+.conflict-banner button {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--bmd-text);
+  background: color-mix(in srgb, var(--bmd-text) 7%, transparent);
+  border: 1px solid var(--bmd-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.conflict-banner button:hover {
+  border-color: var(--bmd-text-faint);
+}
+
+.banner-enter-from,
+.banner-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-8px);
+}
+
+.banner-enter-active,
+.banner-leave-active {
+  transition: all 180ms ease;
 }
 
 .editor-host {

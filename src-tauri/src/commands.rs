@@ -97,6 +97,7 @@ pub async fn read_doc(path: String) -> Result<DocPayload, String> {
 
 /// 原子写（DESIGN.md §5.1）：同目录临时文件 + fsync + rename。
 /// expected_mtime_ms 不匹配时返回 "conflict"，前端据此走冲突流程。
+/// 写入前登记到 watcher 自写忽略表（DESIGN.md §5.2）。
 #[tauri::command]
 pub async fn write_doc_atomic(
     path: String,
@@ -110,6 +111,7 @@ pub async fn write_doc_atomic(
             return Err("conflict".into());
         }
     }
+    crate::watcher::register_self_write(&p);
     let tmp = p.with_extension("bmd.tmp");
     {
         use std::io::Write;
@@ -119,6 +121,54 @@ pub async fn write_doc_atomic(
     }
     fs::rename(&tmp, &p).map_err(err)?;
     mtime_ms(&p)
+}
+
+/// 粘贴图片落盘（FR-25）：<文档目录>/assets/<文档名>/img-<序号>.<ext>，返回相对路径
+#[tauri::command]
+pub async fn save_pasted_image(
+    doc_path: String,
+    data_b64: String,
+    ext: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp") {
+        return Err(format!("不支持的图片格式: {ext}"));
+    }
+    let doc = require_abs(&doc_path)?;
+    let dir = doc.parent().ok_or("文档无父目录")?;
+    let stem = doc
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("images");
+    let assets = dir.join("assets").join(stem);
+    fs::create_dir_all(&assets).map_err(err)?;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_b64)
+        .map_err(err)?;
+    let millis = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(err)?
+        .as_millis();
+    let mut n = 0u32;
+    let target = loop {
+        let name = if n == 0 {
+            format!("img-{millis}.{ext}")
+        } else {
+            format!("img-{millis}-{n}.{ext}")
+        };
+        let candidate = assets.join(&name);
+        if !candidate.exists() {
+            break candidate;
+        }
+        n += 1;
+    };
+    fs::write(&target, &bytes).map_err(err)?;
+    Ok(format!(
+        "assets/{}/{}",
+        stem,
+        target.file_name().unwrap().to_string_lossy()
+    ))
 }
 
 #[tauri::command]

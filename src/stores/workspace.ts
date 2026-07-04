@@ -23,6 +23,12 @@ export const useWorkspace = defineStore('workspace', {
       this.children = {}
       this.expanded = {}
       await this.ensureChildren(target)
+      // 外部变更监听（FR-05）
+      try {
+        await ipc().startWatch(target)
+      } catch (e) {
+        console.warn('[bmd] 目录监听启动失败', e)
+      }
     },
 
     async ensureChildren(dir: string) {

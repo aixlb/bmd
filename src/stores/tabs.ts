@@ -8,6 +8,8 @@ export interface Tab {
   title: string
   dirty: boolean
   mtimeMs: number | null
+  /** 磁盘被外部修改且本地有未保存改动（FR-21） */
+  conflict: boolean
   /** EditorHost 首次创建 EditorState 的初始内容，消费后置 null */
   initialDoc: string | null
 }
@@ -42,6 +44,7 @@ export const useTabs = defineStore('tabs', {
         title: titleOf(path),
         dirty: false,
         mtimeMs,
+        conflict: false,
         initialDoc: content,
       }
       this.tabs.push(tab)
@@ -56,6 +59,7 @@ export const useTabs = defineStore('tabs', {
         title: '未命名',
         dirty: true,
         mtimeMs: null,
+        conflict: false,
         initialDoc: '',
       }
       this.tabs.push(tab)
@@ -139,6 +143,53 @@ export const useTabs = defineStore('tabs', {
         this.activeId = this.tabs[Math.min(idx, this.tabs.length - 1)]?.id ?? null
       }
       return true
+    },
+
+    /** 外部变更分发（FR-05/21）：未改动的标签静默重载，有改动的标记冲突 */
+    async handleExternalChanges(paths: string[]) {
+      const set = new Set(paths)
+      for (const tab of this.tabs) {
+        if (!tab.path || !set.has(tab.path)) continue
+        if (tab.dirty) {
+          tab.conflict = true
+        } else {
+          await this.reloadFromDisk(tab.id)
+        }
+      }
+    },
+
+    async reloadFromDisk(id: string) {
+      const tab = this.tabs.find((t) => t.id === id)
+      if (!tab?.path) return
+      let payload
+      try {
+        payload = await ipc().readDoc(tab.path)
+      } catch {
+        return // 文件可能已被删除
+      }
+      tab.mtimeMs = payload.mtimeMs
+      tab.dirty = false
+      tab.conflict = false
+      const view = editorRegistry.getActiveView()
+      const state = editorRegistry.get(id)
+      if (this.activeId === id && view && state) {
+        // 活动标签就地替换（userEvent=external 使壳层不置 dirty）
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: payload.content },
+          userEvent: 'external.reload',
+        })
+      } else {
+        editorRegistry.remove(id)
+        tab.initialDoc = payload.content
+      }
+    },
+
+    /** 冲突处理：保留本地（下次保存直接覆盖磁盘） */
+    keepLocal(id: string) {
+      const tab = this.tabs.find((t) => t.id === id)
+      if (!tab) return
+      tab.conflict = false
+      tab.mtimeMs = null
     },
 
     sessionSnapshot(root: string | null): Session {

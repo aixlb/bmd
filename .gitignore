@@ -1,0 +1,17 @@
+# Node
+node_modules/
+dist/
+*.local
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.log
+
+# Test artifacts
+coverage/

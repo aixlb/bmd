@@ -183,6 +183,27 @@ onMounted(() => {
       <button class="chip" :class="{ on: ai.mentionFiles.length > 0 }" @click="toggleMention">
         @ 文件{{ ai.mentionFiles.length ? ` (${ai.mentionFiles.length})` : '' }}
       </button>
+      <button
+        class="chip"
+        :class="{ on: ai.ragEnabled }"
+        :title="ai.embed ? `语义检索（${ai.embed.model}）` : '词法检索（BM25，未配置嵌入模型）'"
+        @click="ai.toggleRag()"
+      >
+        🔎 RAG{{ ai.ragIndexing ? ' 索引中…' : ai.ragEnabled && !ai.embed ? ' (BM25)' : '' }}
+      </button>
+    </div>
+
+    <div v-if="ai.lastSources.length" class="sources">
+      <span class="dim">检索来源：</span>
+      <button
+        v-for="s in ai.lastSources"
+        :key="s.path + s.heading"
+        class="source"
+        :title="`${s.path} · ${s.heading}`"
+        @click="tabs.openFile(s.path)"
+      >
+        {{ s.path.split('/').pop() }}
+      </button>
     </div>
 
     <div v-if="mentionOpen" class="mention-list">
@@ -373,6 +394,29 @@ onMounted(() => {
   border-style: solid;
   border-color: color-mix(in srgb, var(--bmd-accent-a) 55%, transparent);
   background: color-mix(in srgb, var(--bmd-accent-a) 10%, transparent);
+}
+
+.sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px 0;
+}
+
+.source {
+  padding: 2px 9px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--bmd-link);
+  background: color-mix(in srgb, var(--bmd-accent-a) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--bmd-accent-a) 30%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mention-list {

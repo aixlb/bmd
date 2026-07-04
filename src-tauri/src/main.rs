@@ -2,6 +2,7 @@
 
 mod ai;
 mod commands;
+mod rag;
 mod watcher;
 
 use tauri::Manager;
@@ -41,6 +42,8 @@ fn main() {
             ai::ai_cancel,
             ai::load_chats,
             ai::save_chats,
+            rag::rag_index,
+            rag::rag_search,
         ])
         .setup(|app| {
             let window = app

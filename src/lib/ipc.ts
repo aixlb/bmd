@@ -48,6 +48,33 @@ export interface Ipc {
   aiCancel(requestId: string): Promise<void>
   loadChats(workspace: string): Promise<string>
   saveChats(workspace: string, json: string): Promise<void>
+  ragIndex(workspace: string, embed: EmbedConfig | null): Promise<RagIndexStats>
+  ragSearch(
+    workspace: string,
+    query: string,
+    embed: EmbedConfig | null,
+    k: number,
+  ): Promise<RagHit[]>
+}
+
+export interface EmbedConfig {
+  providerId: string
+  baseUrl: string
+  model: string
+}
+
+export interface RagIndexStats {
+  files: number
+  chunks: number
+  embedded: number
+  skipped: number
+}
+
+export interface RagHit {
+  path: string
+  heading: string
+  snippet: string
+  score: number
 }
 
 export interface AiProvider {
@@ -139,6 +166,9 @@ function tauriIpc(): Ipc {
     aiCancel: (requestId) => inv('ai_cancel', { requestId }),
     loadChats: (workspace) => inv('load_chats', { workspace }),
     saveChats: (workspace, json) => inv('save_chats', { workspace, json }),
+    ragIndex: (workspace, embed) => inv('rag_index', { workspace, embed }),
+    ragSearch: (workspace, query, embed, k) =>
+      inv('rag_search', { workspace, query, embed, k }),
   }
 }
 
@@ -326,6 +356,25 @@ graph LR
       return 'null'
     },
     async saveChats() {},
+    async ragIndex() {
+      return { files: files.size, chunks: files.size * 2, embedded: 0, skipped: 0 }
+    },
+    async ragSearch(_ws, query, _embed, k) {
+      // mock：2 字滑窗重叠计分（真实实现在 Rust 侧：BM25/余弦）
+      const grams: string[] = []
+      for (let i = 0; i < query.length - 1; i++) grams.push(query.slice(i, i + 2))
+      return [...files.entries()]
+        .filter(([p]) => /\.(md|markdown)$/i.test(p))
+        .map(([p, f]) => ({
+          path: p,
+          heading: p.split('/').pop() ?? p,
+          snippet: f.content.slice(0, 200),
+          score: grams.filter((g) => f.content.includes(g)).length,
+        }))
+        .filter((h) => h.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, k)
+    },
   }
 }
 

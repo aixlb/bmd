@@ -57,6 +57,20 @@ function removeCustom(id: string) {
   ai.saveCustomProviders()
   if (ai.activeProviderId === id) ai.selectProvider('claude')
 }
+
+function onEmbedProvider(id: string) {
+  if (!id) {
+    ai.setEmbed(null)
+    return
+  }
+  const p = ai.providers.find((x) => x.id === id)
+  if (!p) return
+  ai.setEmbed({
+    providerId: p.id,
+    baseUrl: p.baseUrl,
+    model: ai.embed?.model || 'text-embedding-3-small',
+  })
+}
 </script>
 
 <template>
@@ -97,6 +111,33 @@ function removeCustom(id: string) {
               <button class="mini" @click="editProvider(p)">编辑</button>
               <button class="mini danger" @click="removeCustom(p.id)">删</button>
             </template>
+          </div>
+        </div>
+
+        <div class="embed-sec">
+          <h3>RAG 嵌入模型（语义检索）</h3>
+          <div class="embed-row">
+            <select
+              :value="ai.embed?.providerId ?? ''"
+              @change="onEmbedProvider(($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">不使用（BM25 词法检索兜底）</option>
+              <option
+                v-for="p in ai.providers.filter((x) => x.protocol === 'openai')"
+                :key="p.id"
+                :value="p.id"
+              >
+                经 {{ p.name }} 端点
+              </option>
+            </select>
+            <input
+              v-if="ai.embed"
+              :value="ai.embed.model"
+              placeholder="嵌入模型名（如 text-embedding-3-small / bge-m3）"
+              @change="
+                ai.setEmbed({ ...ai.embed!, model: ($event.target as HTMLInputElement).value })
+              "
+            />
           </div>
         </div>
 
@@ -292,5 +333,36 @@ h2 {
 .add:hover {
   color: var(--bmd-text);
   border-color: var(--bmd-text-faint);
+}
+
+.embed-sec {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bmd-border);
+}
+
+.embed-sec h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--bmd-text-faint);
+  letter-spacing: 0.05em;
+}
+
+.embed-row {
+  display: flex;
+  gap: 8px;
+}
+
+.embed-row select,
+.embed-row input {
+  flex: 1;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--bmd-text);
+  background: var(--bmd-bg);
+  border: 1px solid var(--bmd-border);
+  border-radius: 7px;
+  outline: none;
 }
 </style>

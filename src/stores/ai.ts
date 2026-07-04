@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ipc, type AiProvider } from '@/lib/ipc'
+import { ipc, type AiProvider, type EmbedConfig, type RagHit } from '@/lib/ipc'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { useTabs } from '@/stores/tabs'
 import { useWorkspace } from '@/stores/workspace'
@@ -81,6 +81,13 @@ export const useAi = defineStore('ai', {
     includeSelection: true,
     mentionFiles: [] as string[],
     providerModalVisible: false,
+    // ---- RAG（M6/FR-39） ----
+    ragEnabled: localStorage.getItem('bmd.ai.rag') === 'on',
+    /** 嵌入模型配置；null = BM25 词法兜底 */
+    embed: JSON.parse(localStorage.getItem('bmd.ai.embed') ?? 'null') as EmbedConfig | null,
+    ragIndexing: false,
+    ragIndexed: false,
+    lastSources: [] as RagHit[],
   }),
 
   getters: {
@@ -162,8 +169,34 @@ export const useAi = defineStore('ai', {
       )
     },
 
-    /** 组装 system 上下文（DESIGN §13.3 预算与优先级：选区 > 文档 > @文件） */
-    async buildSystem(): Promise<string | null> {
+    async toggleRag() {
+      this.ragEnabled = !this.ragEnabled
+      localStorage.setItem('bmd.ai.rag', this.ragEnabled ? 'on' : 'off')
+      if (this.ragEnabled) await this.ensureIndex()
+    },
+
+    setEmbed(cfg: EmbedConfig | null) {
+      this.embed = cfg
+      localStorage.setItem('bmd.ai.embed', JSON.stringify(cfg))
+      this.ragIndexed = false
+    },
+
+    async ensureIndex(force = false) {
+      const ws = useWorkspace()
+      if (!ws.root || this.ragIndexing || (this.ragIndexed && !force)) return
+      this.ragIndexing = true
+      try {
+        await ipc().ragIndex(ws.root, this.embed)
+        this.ragIndexed = true
+      } catch (e) {
+        console.warn('[bmd] RAG 索引失败', e)
+      } finally {
+        this.ragIndexing = false
+      }
+    },
+
+    /** 组装 system 上下文（DESIGN §13.3 预算与优先级：选区 > 文档 > @文件 > RAG） */
+    async buildSystem(query = ''): Promise<string | null> {
       const tabs = useTabs()
       const parts: string[] = [
         '你是 bmd Markdown 编辑器内置的写作助手。回答使用中文（除非用户要求其他语言）。涉及改写/续写时输出合法的 markdown 正文，不要用代码块包裹整体答案。',
@@ -196,6 +229,28 @@ export const useAi = defineStore('ai', {
           // 文件不可读，跳过
         }
       }
+
+      // RAG 检索片段（FR-39）
+      this.lastSources = []
+      const ws = useWorkspace()
+      if (this.ragEnabled && ws.root && query && budget > 500) {
+        await this.ensureIndex()
+        try {
+          const hits = await ipc().ragSearch(ws.root, query, this.embed, 6)
+          const active = tabs.active?.path
+          const usable = hits.filter((h) => h.path !== active)
+          if (usable.length) {
+            this.lastSources = usable
+            const block = usable
+              .map((h) => `《${h.path.split('/').pop()} · ${h.heading}》\n${h.snippet}`)
+              .join('\n---\n')
+              .slice(0, Math.max(0, budget))
+            parts.push(`【工作区相关片段（自动检索）】\n${block}`)
+          }
+        } catch (e) {
+          console.warn('[bmd] RAG 检索失败', e)
+        }
+      }
       return parts.join('\n\n')
     },
 
@@ -212,7 +267,7 @@ export const useAi = defineStore('ai', {
 
       this.busy = true
       this.requestId = nextId('req')
-      const system = await this.buildSystem()
+      const system = await this.buildSystem(text)
       // 历史裁剪：最近 12 条
       const history = session.messages
         .filter((m) => !m.streaming && !m.error)

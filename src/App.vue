@@ -61,6 +61,8 @@ onMounted(async () => {
   void ipc().onFsChanged(async (paths) => {
     await workspace.refresh()
     await tabs.handleExternalChanges(paths)
+    // RAG 增量同步（内容 hash 未变的文件在 Rust 侧跳过）
+    if (ai.ragEnabled) void ai.ensureIndex(true)
   })
 
   const session = await ipc().loadSession()

@@ -1,18 +1,43 @@
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
-import { EditorState } from '@codemirror/state'
-import { EditorView, drawSelection, keymap } from '@codemirror/view'
+import { EditorState, type Extension } from '@codemirror/state'
+import { EditorView, type ViewUpdate, drawSelection, keymap } from '@codemirror/view'
 
 import { headingDecorations } from './preview/headingField'
 import { inlinePreviewPlugin, linkClickHandler } from './preview/livePreview'
 import { bmdBaseTheme } from './theme'
 
-export interface BmdEditorConfig {
-  parent: HTMLElement
-  doc?: string
-  onDocChanged?: (doc: string) => void
+export interface BmdCoreConfig {
+  /** 文档内容变更（用户编辑）时回调 */
+  onDocChanged?: (doc: EditorState) => void
+  /** 任意视图更新（含选区移动），供状态栏等使用 */
+  onViewUpdate?: (update: ViewUpdate) => void
+  /** ⌘/Ctrl+点击链接 */
   onOpenLink?: (url: string) => void
+}
+
+/** bmd 内核扩展集：一个标签页 = 一个携带这套扩展的 EditorState */
+export function bmdExtensions(config: BmdCoreConfig = {}): Extension {
+  return [
+    history(),
+    drawSelection(),
+    keymap.of([...defaultKeymap, ...historyKeymap]),
+    markdown({ base: markdownLanguage, codeLanguages: languages }),
+    EditorView.lineWrapping,
+    bmdBaseTheme,
+    headingDecorations,
+    inlinePreviewPlugin,
+    linkClickHandler(config.onOpenLink ?? (() => {})),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged) config.onDocChanged?.(update.state)
+      config.onViewUpdate?.(update)
+    }),
+  ]
+}
+
+export function createBmdState(doc: string, config: BmdCoreConfig = {}): EditorState {
+  return EditorState.create({ doc, extensions: bmdExtensions(config) })
 }
 
 export interface BmdEditor {
@@ -23,29 +48,14 @@ export interface BmdEditor {
   destroy: () => void
 }
 
-/** 创建一个 bmd 编辑器实例（纯 TS，无框架依赖）。 */
-export function createBmdEditor(config: BmdEditorConfig): BmdEditor {
+/** 单实例便捷封装（demo/测试用；应用层多标签请用 createBmdState + 共享 EditorView） */
+export function createBmdEditor(
+  config: BmdCoreConfig & { parent: HTMLElement; doc?: string },
+): BmdEditor {
   const view = new EditorView({
     parent: config.parent,
-    state: EditorState.create({
-      doc: config.doc ?? '',
-      extensions: [
-        history(),
-        drawSelection(),
-        keymap.of([...defaultKeymap, ...historyKeymap]),
-        markdown({ base: markdownLanguage, codeLanguages: languages }),
-        EditorView.lineWrapping,
-        bmdBaseTheme,
-        headingDecorations,
-        inlinePreviewPlugin,
-        linkClickHandler(config.onOpenLink ?? (() => {})),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged) config.onDocChanged?.(update.state.doc.toString())
-        }),
-      ],
-    }),
+    state: createBmdState(config.doc ?? '', config),
   })
-
   return {
     view,
     getMarkdown: () => view.state.doc.toString(),

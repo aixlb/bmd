@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod commands;
+
 use tauri::Manager;
 
 fn main() {
@@ -7,6 +9,17 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .invoke_handler(tauri::generate_handler![
+            commands::scan_dir,
+            commands::read_doc,
+            commands::write_doc_atomic,
+            commands::create_entry,
+            commands::rename_entry,
+            commands::trash_entry,
+            commands::reveal_in_os,
+            commands::load_session,
+            commands::save_session,
+        ])
         .setup(|app| {
             let window = app
                 .get_webview_window("main")

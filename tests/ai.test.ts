@@ -147,3 +147,48 @@ describe('AI 对话链路（M5）', () => {
     expect(ai.activeProvider.id).toBe('claude')
   })
 })
+
+describe('模型预设覆盖（kimi/minimax/glm/deepseek/claude/gpt）', () => {
+  it('目标模型全部在预设列表且协议/端点正确', async () => {
+    const { PRESET_PROVIDERS } = await import('../src/stores/ai')
+    const byId = Object.fromEntries(PRESET_PROVIDERS.map((p) => [p.id, p]))
+
+    // 目标清单逐一在列
+    for (const id of ['kimi', 'minimax', 'glm', 'deepseek', 'claude', 'openai']) {
+      expect(byId[id], `缺少预设 ${id}`).toBeTruthy()
+      expect(byId[id].preset).toBe(true)
+    }
+    // Claude 走 Anthropic Messages，其余走 OpenAI 兼容
+    expect(byId.claude.protocol).toBe('anthropic')
+    for (const id of ['kimi', 'minimax', 'glm', 'deepseek', 'openai', 'qwen', 'ollama']) {
+      expect(byId[id].protocol).toBe('openai')
+    }
+    // 端点归属正确（防手滑串门）
+    expect(byId.kimi.baseUrl).toContain('moonshot')
+    expect(byId.minimax.baseUrl).toContain('minimax')
+    expect(byId.glm.baseUrl).toContain('bigmodel')
+    expect(byId.deepseek.baseUrl).toContain('deepseek')
+    expect(byId.claude.baseUrl).toContain('anthropic')
+    expect(byId.openai.model).toContain('gpt')
+    // id 唯一
+    expect(new Set(PRESET_PROVIDERS.map((p) => p.id)).size).toBe(PRESET_PROVIDERS.length)
+  })
+
+  it('预设 provider 可直接激活并进入请求', async () => {
+    const { useAi } = await import('../src/stores/ai')
+    const ai = useAi()
+    let usedProvider: string | null = null
+    mock.aiChat = vi.fn(async (req, onEvent: (e: AiEvent) => void) => {
+      usedProvider = req.provider.id
+      onEvent({ type: 'delta', text: 'ok' })
+      onEvent({ type: 'done' })
+    })
+    for (const id of ['minimax', 'kimi', 'glm', 'deepseek']) {
+      ai.selectProvider(id)
+      expect(ai.activeProvider.id).toBe(id)
+      ai.newSession()
+      await ai.send('测试')
+      expect(usedProvider).toBe(id)
+    }
+  })
+})

@@ -11,6 +11,7 @@ export const PRESET_PROVIDERS: AiProvider[] = [
   { id: 'openai', name: 'OpenAI', protocol: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', preset: true },
   { id: 'deepseek', name: 'DeepSeek', protocol: 'openai', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', preset: true },
   { id: 'kimi', name: 'Kimi', protocol: 'openai', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-32k', preset: true },
+  { id: 'minimax', name: 'MiniMax', protocol: 'openai', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2', preset: true },
   { id: 'qwen', name: '通义千问', protocol: 'openai', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus', preset: true },
   { id: 'glm', name: '智谱 GLM', protocol: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-plus', preset: true },
   { id: 'ollama', name: 'Ollama 本地', protocol: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5', preset: true },

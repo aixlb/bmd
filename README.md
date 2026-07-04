@@ -21,7 +21,17 @@ Tauri 2 · Rust · Vue 3 + TypeScript + Vite · CodeMirror 6 / Lezer（自研 li
 
 ## 状态
 
-🚧 开发中（里程碑见需求文档 §5）。
+✅ M0–M6 全部里程碑已实现（2026-07-04）：自研内核（reveal-on-cursor / IME 安全 / 视口虚拟化）、
+全部语法渲染（GFM/KaTeX/Mermaid/表格就地编辑）、文件树/大纲/多标签/自动保存/会话恢复、
+查找替换/Slash/浮动工具条/图片粘贴/外部变更监听、导出 HTML/PDF、AI 助手（双协议多模型 + 工作区 RAG）。
+
+**自动化测试**：69 项前端（vitest）+ 14 项 Rust（cargo test）全绿；入口 273KB gzip；dmg 6.3MB。
+
+```bash
+npm install && npm run tauri dev    # 开发
+npm run tauri build                 # 打包（推 v* tag 触发 CI 双平台发布）
+npx vitest run && cargo test --manifest-path src-tauri/Cargo.toml   # 测试
+```
 
 ## License
 

@@ -10,11 +10,6 @@
 - 🌗 **现代外观**——暗色/亮色主题、macOS 毛玻璃、Windows Mica、一体化标题栏
 - 🤖 **AI 写作副驾**——右侧 AI 面板（Claudian 式）：多模型可配置（Claude / DeepSeek / Kimi / Qwen / GLM / Ollama…）、流式对话、工作区 RAG 检索、diff 预览一键应用改动；Key 存系统钥匙串、无遥测
 
-## 文档
-
-- [需求文档](docs/REQUIREMENTS.md)
-- [设计文档](docs/DESIGN.md)
-
 ## 技术栈
 
 Tauri 2 · Rust · Vue 3 + TypeScript + Vite · CodeMirror 6 / Lezer（自研 live-preview 内核 `bmd-core`）· KaTeX · Mermaid

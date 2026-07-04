@@ -41,7 +41,35 @@ export interface Ipc {
   startWatch(root: string): Promise<void>
   onFsChanged(cb: (paths: string[]) => void): Promise<() => void>
   initialFiles(): Promise<string[]>
+  // ---- AI（DESIGN §13） ----
+  setApiKey(providerId: string, key: string): Promise<void>
+  hasApiKey(providerId: string): Promise<boolean>
+  aiChat(req: AiChatRequest, onEvent: (e: AiEvent) => void): Promise<void>
+  aiCancel(requestId: string): Promise<void>
+  loadChats(workspace: string): Promise<string>
+  saveChats(workspace: string, json: string): Promise<void>
 }
+
+export interface AiProvider {
+  id: string
+  name: string
+  protocol: 'anthropic' | 'openai'
+  baseUrl: string
+  model: string
+  preset?: boolean
+}
+
+export interface AiChatRequest {
+  requestId: string
+  provider: AiProvider
+  system: string | null
+  messages: { role: string; content: string }[]
+}
+
+export type AiEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'done' }
+  | { type: 'error'; message: string }
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
@@ -94,6 +122,23 @@ function tauriIpc(): Ipc {
       return listen<string[]>('fs-changed', (e) => cb(e.payload))
     },
     initialFiles: () => inv('initial_files'),
+    setApiKey: (providerId, key) => inv('set_api_key', { providerId, key }),
+    hasApiKey: (providerId) => inv('has_api_key', { providerId }),
+    aiChat: async (req, onEvent) => {
+      const { invoke, Channel } = await import('@tauri-apps/api/core')
+      const channel = new Channel<AiEvent>()
+      channel.onmessage = onEvent
+      await invoke('ai_chat', {
+        requestId: req.requestId,
+        provider: req.provider,
+        system: req.system,
+        messages: req.messages,
+        onEvent: channel,
+      })
+    },
+    aiCancel: (requestId) => inv('ai_cancel', { requestId }),
+    loadChats: (workspace) => inv('load_chats', { workspace }),
+    saveChats: (workspace, json) => inv('save_chats', { workspace, json }),
   }
 }
 
@@ -258,8 +303,33 @@ graph LR
     async initialFiles() {
       return []
     },
+    // ---- AI mock：浏览器预览用的假流式回复 ----
+    async setApiKey() {},
+    async hasApiKey() {
+      return true
+    },
+    async aiChat(req, onEvent) {
+      cancelled.delete(req.requestId)
+      const last = req.messages[req.messages.length - 1]?.content ?? ''
+      const reply = `（demo 回复）收到你的消息：**${last.slice(0, 40)}**\n\n这是浏览器预览环境的模拟流式输出；在桌面应用中将连接你配置的模型（${req.provider.name} · ${req.provider.model}）。`
+      for (const ch of reply) {
+        if (cancelled.has(req.requestId)) return
+        await new Promise((r) => setTimeout(r, 12))
+        onEvent({ type: 'delta', text: ch })
+      }
+      onEvent({ type: 'done' })
+    },
+    async aiCancel(requestId) {
+      cancelled.add(requestId)
+    },
+    async loadChats() {
+      return 'null'
+    },
+    async saveChats() {},
   }
 }
+
+const cancelled = new Set<string>()
 
 function nameNoExt(p: string) {
   const name = p.slice(p.lastIndexOf('/') + 1)

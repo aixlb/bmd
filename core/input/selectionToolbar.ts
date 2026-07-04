@@ -16,6 +16,15 @@ const BUTTONS: { label: string; title: string; cmd: (v: EditorView) => boolean }
   { label: 'S', title: '删除线 ⌘⇧X', cmd: toggleStrikethrough },
   { label: '‹›', title: '行内代码 ⌘E', cmd: toggleInlineCode },
   { label: '🔗', title: '链接 ⌘K', cmd: insertLink },
+  {
+    label: '✦',
+    title: 'AI 处理选区（FR-40）',
+    cmd: (view) => {
+      // 壳层监听此事件打开 AI 面板（内核不感知 AI）
+      view.dom.dispatchEvent(new CustomEvent('bmd:ai-selection', { bubbles: true }))
+      return true
+    },
+  },
 ]
 
 function makeTooltip(pos: number): Tooltip {

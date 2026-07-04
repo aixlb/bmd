@@ -2,6 +2,7 @@
 import { onMounted, watch } from 'vue'
 import { ref } from 'vue'
 import { preheatRenderers } from '@core/index'
+import AiPanel from './components/AiPanel.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import EditorHost from './components/EditorHost.vue'
 import QuickOpen from './components/QuickOpen.vue'
@@ -12,10 +13,12 @@ import TitleBar from './components/TitleBar.vue'
 import { ipc, isTauri } from '@/lib/ipc'
 import { registerMenu } from '@/lib/menuBus'
 import { useShortcuts } from '@/lib/shortcuts'
+import { useAi } from '@/stores/ai'
 import { useTabs } from '@/stores/tabs'
 import { useUi } from '@/stores/ui'
 import { useWorkspace } from '@/stores/workspace'
 
+const ai = useAi()
 const tabs = useTabs()
 const ui = useUi()
 const workspace = useWorkspace()
@@ -89,6 +92,9 @@ onMounted(async () => {
         <Sidebar v-if="ui.sidebarVisible" />
       </Transition>
       <EditorHost />
+      <Transition name="ai">
+        <AiPanel v-if="ai.panelVisible" />
+      </Transition>
     </div>
     <StatusBar />
     <SettingsPanel />
@@ -118,6 +124,17 @@ onMounted(async () => {
 .sidebar-enter-from,
 .sidebar-leave-to {
   margin-left: calc(-1 * v-bind('ui.sidebarWidth + "px"'));
+  opacity: 0;
+}
+
+.ai-enter-active,
+.ai-leave-active {
+  transition: margin-right 180ms cubic-bezier(0.25, 0.8, 0.35, 1), opacity 150ms;
+}
+
+.ai-enter-from,
+.ai-leave-to {
+  margin-right: calc(-1 * v-bind('ai.panelWidth + "px"'));
   opacity: 0;
 }
 </style>

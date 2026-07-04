@@ -22,12 +22,16 @@ window-vibrancy = "0.7"
 trash = "5"
 base64 = "0.22"
 notify = "8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
 [dev-dependencies]
 tempfile = "3"
 
 [profile.release]
 codegen-units = 1
-lto = true
+# fat LTO 与 window-vibrancy 的 objc 类符号冲突（重复定义），用 thin
+lto = "thin"
 strip = true
 panic = "abort"

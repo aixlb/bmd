@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
 mod commands;
 mod watcher;
 
@@ -34,6 +35,12 @@ fn main() {
             commands::save_pasted_image,
             watcher::start_watch,
             initial_files,
+            ai::set_api_key,
+            ai::has_api_key,
+            ai::ai_chat,
+            ai::ai_cancel,
+            ai::load_chats,
+            ai::save_chats,
         ])
         .setup(|app| {
             let window = app

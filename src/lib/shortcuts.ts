@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted } from 'vue'
 import { toggleSourceMode } from '@core/index'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { ipc } from '@/lib/ipc'
+import { useAi } from '@/stores/ai'
 import { useTabs } from '@/stores/tabs'
 import { useUi } from '@/stores/ui'
 import { useWorkspace } from '@/stores/workspace'
@@ -10,6 +11,7 @@ import { useWorkspace } from '@/stores/workspace'
 export const isMac = navigator.platform.toUpperCase().includes('MAC')
 
 export function useShortcuts() {
+  const ai = useAi()
   const tabs = useTabs()
   const ui = useUi()
   const workspace = useWorkspace()
@@ -37,6 +39,10 @@ export function useShortcuts() {
       case 'p':
         e.preventDefault()
         ui.quickOpenVisible = true
+        break
+      case 'j':
+        e.preventDefault()
+        ai.toggle()
         break
       case ',':
         e.preventDefault()

@@ -20,6 +20,7 @@ let sessionTimer: ReturnType<typeof setTimeout> | null = null
 
 onMounted(async () => {
   ui.applyTheme()
+  ui.applyFontSize()
   const session = await ipc().loadSession()
   if (session?.root) await workspace.openFolder(session.root)
   if (session) await tabs.restoreSession(session)

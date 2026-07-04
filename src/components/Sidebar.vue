@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import FileNode from './FileNode.vue'
+import Outline from './Outline.vue'
 import type { Entry } from '@/lib/ipc'
 import { useUi } from '@/stores/ui'
 import { useWorkspace } from '@/stores/workspace'
@@ -79,11 +80,7 @@ function startResize(e: PointerEvent) {
       </div>
     </template>
 
-    <template v-else>
-      <div class="empty">
-        <p class="hint">大纲视图将在 M2 提供</p>
-      </div>
-    </template>
+    <Outline v-else />
 
     <div class="resize-handle" :class="{ resizing }" @pointerdown="startResize" />
   </aside>

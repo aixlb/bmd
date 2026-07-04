@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { EditorState } from '@codemirror/state'
 import { EditorView, type ViewUpdate } from '@codemirror/view'
-import { createBmdState } from '@core/index'
+import { createBmdState, getOutline } from '@core/index'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { isTauri } from '@/lib/ipc'
 import { useTabs } from '@/stores/tabs'
@@ -15,16 +15,61 @@ const ui = useUi()
 let view: EditorView | null = null
 let currentTabId: string | null = null
 let countTimer: ReturnType<typeof setTimeout> | null = null
+let outlineTimer: ReturnType<typeof setTimeout> | null = null
+const autosaveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function openLink(url: string) {
-  // M2 接 shell 插件在系统浏览器打开；浏览器预览环境直接新开页
-  if (!isTauri) window.open(url, '_blank', 'noopener')
+  if (isTauri) {
+    // M4 接 shell/opener 插件；当前静默忽略非法协议
+    if (/^https?:\/\//.test(url)) void import('@tauri-apps/api/core').then(() => {})
+  } else {
+    window.open(url, '_blank', 'noopener')
+  }
+}
+
+/** 相对路径图片基于文档目录解析；Tauri 下走 asset 协议 */
+function makeImageResolver(tabPath: string | null) {
+  return (src: string): string => {
+    if (/^(https?:|data:|asset:)/.test(src)) return src
+    if (!isTauri || !tabPath) return src
+    const dir = tabPath.slice(0, Math.max(tabPath.lastIndexOf('/'), tabPath.lastIndexOf('\\')))
+    const abs = /^([a-zA-Z]:[\\/]|\/)/.test(src) ? src : `${dir}/${src}`
+    // convertFileSrc 是同步纯函数，但模块是异步加载的；首帧后已预热
+    return tauriConvert ? tauriConvert(abs) : src
+  }
+}
+
+let tauriConvert: ((p: string) => string) | null = null
+if (isTauri) {
+  void import('@tauri-apps/api/core').then((m) => (tauriConvert = m.convertFileSrc))
+}
+
+function scheduleAutosave(tabId: string) {
+  const prev = autosaveTimers.get(tabId)
+  if (prev) clearTimeout(prev)
+  autosaveTimers.set(
+    tabId,
+    setTimeout(() => {
+      autosaveTimers.delete(tabId)
+      const tab = tabs.tabs.find((t) => t.id === tabId)
+      // 未命名文件不自动弹保存框（FR-22）
+      if (tab?.dirty && tab.path) void tabs.saveTab(tabId)
+    }, 800),
+  )
+}
+
+function pushOutline(state: EditorState) {
+  if (outlineTimer) clearTimeout(outlineTimer)
+  outlineTimer = setTimeout(() => {
+    ui.outline = getOutline(state)
+  }, 200)
 }
 
 function trackUpdate(tabId: string, update: ViewUpdate) {
   if (update.docChanged) {
-    // 注册处始终持有最新快照，保存路径（store）由此取文档
     editorRegistry.set(tabId, update.state)
+    scheduleAutosave(tabId)
+    pushOutline(update.state)
     if (countTimer) clearTimeout(countTimer)
     countTimer = setTimeout(() => {
       ui.counts = countWords(update.state.doc.toString())
@@ -33,46 +78,62 @@ function trackUpdate(tabId: string, update: ViewUpdate) {
   const head = update.state.selection.main.head
   const line = update.state.doc.lineAt(head)
   ui.cursor = { line: line.number, col: head - line.from + 1 }
+  ui.cursorPos = head
 }
 
-function buildState(tabId: string, doc: string): EditorState {
+function buildState(tabId: string, doc: string, tabPath: string | null): EditorState {
   return createBmdState(doc, {
     onDocChanged: () => tabs.markDirty(tabId),
     onViewUpdate: (u) => trackUpdate(tabId, u),
     onOpenLink: openLink,
+    resolveImageSrc: makeImageResolver(tabPath),
   })
 }
 
 function syncActive() {
   if (!view) return
-  // 收起上一个标签的状态
+  // 收起上一个标签的状态；若有未存内容立即落盘（FR-19）
   if (currentTabId && editorRegistry.get(currentTabId)) {
     editorRegistry.set(currentTabId, view.state)
+    const prev = tabs.tabs.find((t) => t.id === currentTabId)
+    if (prev?.dirty && prev.path) void tabs.saveTab(currentTabId)
   }
   const tab = tabs.active
   if (!tab) {
     currentTabId = null
     view.setState(EditorState.create({ doc: '' }))
+    ui.outline = []
     return
   }
   let state = editorRegistry.get(tab.id)
   if (!state) {
-    state = buildState(tab.id, tab.initialDoc ?? '')
+    state = buildState(tab.id, tab.initialDoc ?? '', tab.path)
     tab.initialDoc = null
     editorRegistry.set(tab.id, state)
   }
   currentTabId = tab.id
   view.setState(state)
   ui.counts = countWords(state.doc.toString())
+  pushOutline(state)
   view.focus()
+}
+
+function saveAllDirty() {
+  for (const t of tabs.tabs) {
+    if (t.dirty && t.path) void tabs.saveTab(t.id)
+  }
 }
 
 onMounted(() => {
   view = new EditorView({ parent: host.value! })
+  editorRegistry.setActiveView(view)
   watch(() => tabs.activeId, syncActive, { immediate: true })
+  window.addEventListener('blur', saveAllDirty)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('blur', saveAllDirty)
+  editorRegistry.setActiveView(null)
   view?.destroy()
   view = null
 })

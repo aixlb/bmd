@@ -64,4 +64,107 @@ export const bmdBaseTheme = EditorView.baseTheme({
     paddingTop: '0.5em',
     paddingBottom: '0.15em',
   },
+
+  // --- 引用 ---
+  '.bmd-quote-line': {
+    borderLeft: '3px solid color-mix(in srgb, var(--bmd-accent-a) 55%, transparent)',
+    background: 'color-mix(in srgb, var(--bmd-accent-a) 4%, transparent)',
+    paddingLeft: '12px',
+    color: 'var(--bmd-text-dim)',
+  },
+
+  // --- 列表 ---
+  '.bmd-bullet': {
+    display: 'inline-block',
+    width: '1em',
+    textAlign: 'center',
+    color: 'var(--bmd-accent)',
+    fontWeight: '700',
+  },
+  '.bmd-list-num': { color: 'var(--bmd-accent)', fontWeight: '600' },
+  '.bmd-checkbox': {
+    appearance: 'none',
+    width: '15px',
+    height: '15px',
+    margin: '0 6px 0 0',
+    verticalAlign: 'middle',
+    border: '1.5px solid var(--bmd-text-faint)',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    position: 'relative',
+    top: '-1px',
+  },
+  '.bmd-checkbox:checked': {
+    background: 'var(--bmd-accent-gradient)',
+    borderColor: 'transparent',
+  },
+  '.bmd-checkbox:checked::after': {
+    content: '"✓"',
+    position: 'absolute',
+    inset: '0',
+    display: 'grid',
+    placeItems: 'center',
+    fontSize: '10px',
+    color: '#fff',
+  },
+
+  // --- 代码块 ---
+  '.bmd-code-line': {
+    fontFamily: 'var(--bmd-font-mono)',
+    fontSize: '0.88em',
+    lineHeight: '1.6',
+    background: 'var(--bmd-code-bg)',
+    paddingLeft: '14px',
+    paddingRight: '14px',
+  },
+  '.bmd-fence-line': {
+    color: 'var(--bmd-text-faint)',
+    fontSize: '0.8em',
+  },
+  '.bmd-code-info': {
+    color: 'var(--bmd-accent)',
+    fontWeight: '600',
+  },
+  '.bmd-copy-btn': {
+    float: 'right',
+    margin: '2px 0',
+    padding: '1px 8px',
+    font: 'inherit',
+    fontSize: '0.75em',
+    color: 'var(--bmd-text-faint)',
+    background: 'transparent',
+    border: '1px solid var(--bmd-border)',
+    borderRadius: '5px',
+    cursor: 'pointer',
+  },
+  '.bmd-copy-btn:hover': {
+    color: 'var(--bmd-text)',
+    borderColor: 'var(--bmd-text-faint)',
+  },
+
+  // --- 分割线 ---
+  '.bmd-hr': {
+    display: 'inline-block',
+    width: '100%',
+    height: '2px',
+    verticalAlign: 'middle',
+    background:
+      'linear-gradient(90deg, transparent, var(--bmd-border-strong, var(--bmd-border)) 20%, var(--bmd-border-strong, var(--bmd-border)) 80%, transparent)',
+    borderRadius: '1px',
+  },
+
+  // --- 图片 ---
+  '.bmd-image': { display: 'inline-block', maxWidth: '100%' },
+  '.bmd-image img': {
+    maxWidth: '100%',
+    borderRadius: '8px',
+    display: 'block',
+  },
+  '.bmd-image.broken': {
+    color: 'var(--bmd-danger)',
+    fontSize: '0.85em',
+    padding: '4px 8px',
+    border: '1px dashed var(--bmd-danger)',
+    borderRadius: '6px',
+  },
 })

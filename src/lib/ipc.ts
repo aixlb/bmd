@@ -88,7 +88,44 @@ export function createMockIpc(seed?: Record<string, string>): Ipc {
   const files = new Map<string, { content: string; mtime: number }>()
   let clock = 1000
   const defaults: Record<string, string> = seed ?? {
-    '/demo/README.md': '# demo 工作区\n\n这是浏览器预览用的内存工作区。\n',
+    '/demo/README.md': `# bmd 全元素演示
+
+## 行内元素
+
+这是 **加粗**、*斜体*、~~删除线~~、\`行内代码\`、[链接](https://github.com/aixlb/bmd) 与自动链接 https://bmd.dev 。
+
+## 引用与列表
+
+> 引用第一行
+> 引用第二行
+
+- 无序列表项
+- 另一项
+  - 嵌套项
+
+1. 有序第一
+2. 有序第二
+
+- [x] 已完成任务
+- [ ] 待办任务
+
+## 代码块
+
+\`\`\`ts
+function hello(name: string): string {
+  // 注释
+  return \`hi, \${name}\`
+}
+\`\`\`
+
+---
+
+## 图片
+
+![示例图](https://picsum.photos/480/200)
+
+正文结束。
+`,
     '/demo/笔记/想法.md': '## 想法\n\n- **bmd** 要够快\n- 手感要像 Typora\n',
     '/demo/笔记/清单.md': '# 清单\n\n1. 完成 M1\n2. 完成 M2\n',
     '/demo/参考.txt': 'not markdown',

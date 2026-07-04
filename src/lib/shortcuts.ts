@@ -1,5 +1,7 @@
-// 应用级快捷键（REQUIREMENTS.md §3.8 的 M1 子集；编辑类快捷键在内核 keymap 中）
+// 应用级快捷键（REQUIREMENTS.md §3.8；编辑类快捷键在内核 keymap 中）
 import { onBeforeUnmount, onMounted } from 'vue'
+import { toggleSourceMode } from '@core/index'
+import { editorRegistry } from '@/lib/editorRegistry'
 import { ipc } from '@/lib/ipc'
 import { useTabs } from '@/stores/tabs'
 import { useUi } from '@/stores/ui'
@@ -63,6 +65,25 @@ export function useShortcuts() {
         if (!e.shiftKey) return
         e.preventDefault()
         ui.toggleTheme()
+        break
+      case '/': {
+        e.preventDefault()
+        const v = editorRegistry.getActiveView()
+        if (v) toggleSourceMode(v)
+        break
+      }
+      case '=':
+      case '+':
+        e.preventDefault()
+        ui.zoom(1)
+        break
+      case '-':
+        e.preventDefault()
+        ui.zoom(-1)
+        break
+      case '0':
+        e.preventDefault()
+        ui.zoom(0)
         break
     }
   }

@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import type { OutlineItem } from '@core/index'
 
 export type Theme = 'dark' | 'light'
 
@@ -14,8 +15,11 @@ export const useUi = defineStore('ui', {
     sidebarWidth: 260,
     sidebarView: 'files' as 'files' | 'outline',
     theme: initialTheme(),
+    fontSize: Number(localStorage.getItem('bmd.fontSize')) || 16,
     cursor: { line: 1, col: 1 },
+    cursorPos: 0,
     counts: { words: 0, chars: 0 },
+    outline: [] as OutlineItem[],
   }),
 
   actions: {
@@ -32,6 +36,14 @@ export const useUi = defineStore('ui', {
     toggleTheme() {
       this.theme = this.theme === 'dark' ? 'light' : 'dark'
       this.applyTheme()
+    },
+    applyFontSize() {
+      document.documentElement.style.setProperty('--bmd-font-size', `${this.fontSize}px`)
+      localStorage.setItem('bmd.fontSize', String(this.fontSize))
+    },
+    zoom(delta: number) {
+      this.fontSize = delta === 0 ? 16 : Math.min(24, Math.max(12, this.fontSize + delta))
+      this.applyFontSize()
     },
   },
 })

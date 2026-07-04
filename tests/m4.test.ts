@@ -84,3 +84,18 @@ describe('导出 HTML（FR-28）', () => {
     expect(html).not.toContain('<script>alert')
   })
 })
+
+describe('PDF 静默导出（D8 V2）前端链路', () => {
+  it('dirnameOf 兼容两种分隔符', async () => {
+    const { dirnameOf } = await import('../src/export')
+    expect(dirnameOf('/a/b/c.md')).toBe('/a/b')
+    expect(dirnameOf('C:\\docs\\c.md')).toBe('C:\\docs')
+    expect(dirnameOf('c.md')).toBeNull()
+    expect(dirnameOf('/c.md')).toBeNull()
+  })
+
+  it('mock ipc 的 exportPdfNative 拒绝（触发调用方回退）', async () => {
+    const { createMockIpc } = await import('../src/lib/ipc')
+    await expect(createMockIpc().exportPdfNative('<p>x</p>', null, '/demo/x.pdf')).rejects.toThrow()
+  })
+})

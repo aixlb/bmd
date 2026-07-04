@@ -27,6 +27,19 @@ futures-util = "0.3"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
+tokio = { version = "1", features = ["sync", "time"] }
+
+# PDF V2 静默导出（DESIGN.md D8 V2）的平台原生打印 API
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSDictionary", "NSObject", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", features = ["NSPrintInfo", "NSPrintOperation", "NSView", "NSWindow", "NSResponder", "NSGraphics"] }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "objc2-app-kit"] }
+
+[target.'cfg(windows)'.dependencies]
+# 版本须与 wry 锁定的 webview2-com 一致，否则 with_webview 暴露的类型不匹配
+webview2-com = "0.38"
+windows-core = "0.61"
 
 [dev-dependencies]
 tempfile = "3"

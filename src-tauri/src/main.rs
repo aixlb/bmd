@@ -2,6 +2,7 @@
 
 mod ai;
 mod commands;
+mod pdf;
 mod rag;
 mod watcher;
 
@@ -23,6 +24,8 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(watcher::WatchState::default())
+        .manage(pdf::PdfState::default())
+        .register_uri_scheme_protocol(pdf::PROTOCOL, pdf::handle_protocol)
         .invoke_handler(tauri::generate_handler![
             commands::scan_dir,
             commands::read_doc,
@@ -44,6 +47,7 @@ fn main() {
             ai::save_chats,
             rag::rag_index,
             rag::rag_search,
+            pdf::export_pdf,
         ])
         .setup(|app| {
             let window = app
@@ -65,6 +69,26 @@ fn main() {
             window_vibrancy::apply_mica(&window, None).ok();
 
             let _ = window;
+
+            // 本机冒烟：BMD_PDF_SMOKE=/path/out.pdf 走完整静默导出链路后退出
+            if let Ok(out) = std::env::var("BMD_PDF_SMOKE") {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let r =
+                        pdf::export_html_to_pdf(handle.clone(), pdf::smoke_html(), None, out.into())
+                            .await;
+                    match r {
+                        Ok(()) => {
+                            eprintln!("BMD_PDF_SMOKE: ok");
+                            handle.exit(0);
+                        }
+                        Err(e) => {
+                            eprintln!("BMD_PDF_SMOKE: failed: {e}");
+                            handle.exit(1);
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

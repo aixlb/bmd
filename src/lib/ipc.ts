@@ -37,6 +37,8 @@ export interface Ipc {
     filter?: { name: string; extensions: string[] },
   ): Promise<string | null>
   confirm(message: string, title?: string): Promise<boolean>
+  /** 原生静默导出 PDF（D8 V2）；非 Tauri 环境 reject，由调用方回退打印管线 */
+  exportPdfNative(html: string, baseDir: string | null, outPath: string): Promise<void>
   savePastedImage(docPath: string, dataB64: string, ext: string): Promise<string>
   startWatch(root: string): Promise<void>
   onFsChanged(cb: (paths: string[]) => void): Promise<() => void>
@@ -141,6 +143,7 @@ function tauriIpc(): Ipc {
       const { ask } = await import('@tauri-apps/plugin-dialog')
       return ask(message, { title: title ?? 'bmd' })
     },
+    exportPdfNative: (html, baseDir, outPath) => inv('export_pdf', { html, baseDir, outPath }),
     savePastedImage: (docPath, dataB64, ext) =>
       inv('save_pasted_image', { docPath, dataB64, ext }),
     startWatch: (root) => inv('start_watch', { path: root }),
@@ -321,6 +324,9 @@ graph LR
     },
     async confirm(message) {
       return window.confirm(message)
+    },
+    async exportPdfNative() {
+      throw new Error('浏览器环境不支持静默导出')
     },
     async savePastedImage(docPath, _dataB64, ext) {
       const stem = nameNoExt(docPath)

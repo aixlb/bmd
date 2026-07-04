@@ -152,6 +152,7 @@ onMounted(() => {
 
     <div ref="listEl" class="messages">
       <div v-if="!ai.current?.messages.length" class="empty">
+        <img class="empty-img" src="@/assets/ai-empty.png" alt="" draggable="false" />
         <p>我可以帮你续写、润色、翻译、答疑。</p>
         <p class="dim">已自动携带当前文档与选区作为上下文。</p>
       </div>
@@ -334,6 +335,18 @@ onMounted(() => {
   text-align: center;
   font-size: 13px;
   color: var(--bmd-text-dim);
+}
+
+.empty-img {
+  width: 140px;
+  margin-bottom: 10px;
+  opacity: 0.9;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+[data-theme='dark'] .empty-img {
+  filter: invert(1) hue-rotate(180deg);
 }
 
 .dim {

@@ -58,3 +58,10 @@ body {
   color: var(--bmd-text);
   overflow: hidden;
 }
+
+/* 原生 select 弹层：select 背景半透明时 WebView2 弹层会回退白底，
+   显式给 option 铺主题面板色，两套主题都正确 */
+select option {
+  background: var(--bmd-panel);
+  color: var(--bmd-text);
+}

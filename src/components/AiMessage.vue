@@ -25,6 +25,7 @@ function copy(text: string) {
       <div class="bubble user-bubble">{{ msg.content }}</div>
     </template>
     <template v-else>
+      <img class="avatar" src="@/assets/ai-avatar.png" alt="" draggable="false" />
       <div class="bubble ai-bubble">
         <div class="md" v-html="html" />
         <span v-if="msg.streaming" class="caret">▍</span>
@@ -47,6 +48,16 @@ function copy(text: string) {
 
 .msg.user {
   justify-content: flex-end;
+}
+
+.avatar {
+  width: 26px;
+  height: 26px;
+  margin: 2px 8px 0 0;
+  border-radius: 50%;
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .bubble {

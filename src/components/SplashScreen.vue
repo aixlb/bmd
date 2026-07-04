@@ -13,17 +13,21 @@ const HOLD_MS = 420
 const BURST_MS = 520
 
 let raf = 0
+let capTimer = 0
 let finished = false
 
 function finish() {
   if (finished) return
   finished = true
   cancelAnimationFrame(raf)
+  clearTimeout(capTimer)
   fading.value = true
   setTimeout(() => emit('done'), 300)
 }
 
 onMounted(async () => {
+  // 墙钟兜底：rAF 被节流（后台/隐藏窗口）时动画不推进，保证 splash 一定退场
+  capTimer = window.setTimeout(finish, CONVERGE_MS + HOLD_MS + BURST_MS + 1500)
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     finish()
     return
@@ -34,6 +38,8 @@ onMounted(async () => {
   const dpr = Math.min(window.devicePixelRatio || 1, 2)
   const w = window.innerWidth
   const h = window.innerHeight
+  // 窗口尺寸未就绪（隐藏窗/首帧前）时采样画布为 0，getImageData 会抛错卡死 splash
+  if (w < 10 || h < 10) return finish()
   cv.width = w * dpr
   cv.height = h * dpr
   const ctx = cv.getContext('2d')
@@ -63,8 +69,13 @@ onMounted(async () => {
   off.width = off.height = size
   const octx = off.getContext('2d', { willReadFrequently: true })
   if (!octx) return finish()
-  octx.drawImage(img, 0, 0, size, size)
-  const data = octx.getImageData(0, 0, size, size).data
+  let data: Uint8ClampedArray
+  try {
+    octx.drawImage(img, 0, 0, size, size)
+    data = octx.getImageData(0, 0, size, size).data
+  } catch {
+    return finish()
+  }
 
   const ox = (w - size) / 2
   const oy = (h - size) / 2 - h * 0.03
@@ -155,7 +166,10 @@ onMounted(async () => {
   raf = requestAnimationFrame(tick)
 })
 
-onBeforeUnmount(() => cancelAnimationFrame(raf))
+onBeforeUnmount(() => {
+  cancelAnimationFrame(raf)
+  clearTimeout(capTimer)
+})
 </script>
 
 <template>

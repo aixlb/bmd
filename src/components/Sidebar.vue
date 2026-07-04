@@ -101,6 +101,7 @@ function startResize(e: PointerEvent) {
       <div class="tree">
         <template v-if="!workspace.root">
           <div class="empty">
+            <img class="empty-img" src="@/assets/sidebar-empty.png" alt="" draggable="false" />
             <p>还没有打开文件夹</p>
             <button class="primary" @click="workspace.openFolder()">打开文件夹</button>
             <p class="hint">{{ keyHint('⌘⇧O') }}</p>
@@ -303,6 +304,17 @@ function startResize(e: PointerEvent) {
   font-size: 13px;
   padding: 24px;
   text-align: center;
+}
+
+.empty-img {
+  width: 150px;
+  opacity: 0.9;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+[data-theme='dark'] .empty-img {
+  filter: invert(1) hue-rotate(180deg);
 }
 
 .primary {

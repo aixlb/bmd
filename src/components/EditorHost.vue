@@ -178,7 +178,7 @@ onBeforeUnmount(() => {
     </Transition>
     <div v-show="tabs.active" ref="host" class="editor-host" />
     <div v-if="!tabs.active" class="placeholder">
-      <div class="mark">b</div>
+      <img class="mark-img" src="@/assets/editor-empty.png" alt="" draggable="false" />
       <p>打开文件（{{ keyHint('⌘O') }}）或新建（{{ keyHint('⌘N') }}）开始写作</p>
     </div>
   </main>
@@ -269,16 +269,16 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 
-.mark {
-  width: 84px;
-  height: 84px;
-  display: grid;
-  place-items: center;
-  font-size: 46px;
-  font-weight: 800;
-  color: #fff;
-  background: var(--bmd-accent-gradient);
-  border-radius: 22px;
-  opacity: 0.9;
+/* 线稿空状态图（透明底墨迹 PNG）：暗色主题反相为浅色线条 */
+.mark-img {
+  width: 340px;
+  max-width: 72%;
+  opacity: 0.85;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+[data-theme='dark'] .mark-img {
+  filter: invert(1) hue-rotate(180deg);
 }
 </style>

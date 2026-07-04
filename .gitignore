@@ -18,3 +18,7 @@ coverage/
 
 # 内部文档（仅本地，不入库）
 docs/
+
+# Midjourney 原始出图（本地素材；处理后的成品在 src/assets）
+assets/*.png
+*.lnk

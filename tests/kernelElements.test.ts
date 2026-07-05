@@ -10,7 +10,10 @@ import {
   insertTable,
   setHeading,
   toggleBold,
+  toggleOrderedList,
   toggleQuote,
+  toggleTaskList,
+  toggleUnorderedList,
 } from '../core/commands'
 import { getOutline } from '../core/outline'
 import { EditorView } from '@codemirror/view'
@@ -197,6 +200,25 @@ describe('格式命令', () => {
   it('引用切换（多行）', () => {
     expect(run('一\n二', 0, 3, toggleQuote).doc).toBe('> 一\n> 二')
     expect(run('> 一\n> 二', 0, 7, toggleQuote).doc).toBe('一\n二')
+  })
+
+  it('无序列表切换（多行、再按取消）', () => {
+    expect(run('一\n二', 0, 3, toggleUnorderedList).doc).toBe('- 一\n- 二')
+    expect(run('- 一\n- 二', 0, 7, toggleUnorderedList).doc).toBe('一\n二')
+  })
+
+  it('有序列表：递增编号；从无序换型不叠加', () => {
+    expect(run('一\n二\n三', 0, 5, toggleOrderedList).doc).toBe('1. 一\n2. 二\n3. 三')
+    expect(run('- 一\n- 二', 0, 7, toggleOrderedList).doc).toBe('1. 一\n2. 二')
+  })
+
+  it('任务列表切换；缩进保留；空行触发直接放前缀', () => {
+    expect(run('一', 0, 1, toggleTaskList).doc).toBe('- [ ] 一')
+    expect(run('- [x] 完\n- [ ] 未', 0, 12, toggleTaskList).doc).toBe('完\n未')
+    expect(run('  一', 0, 3, toggleUnorderedList).doc).toBe('  - 一')
+    const r = run('', 0, 0, toggleUnorderedList)
+    expect(r.doc).toBe('- ')
+    expect(r.sel.head).toBe(2)
   })
 
   it('插入表格模板', () => {

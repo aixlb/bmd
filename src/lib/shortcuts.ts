@@ -41,14 +41,16 @@ export function useShortcuts() {
     }
     // 插件命令热键（app.addCommand 的 hotkey）
     if (plugins.handleKey(e)) return
-    if (!mod) return
 
-    if (key >= '1' && key <= '9' && !e.shiftKey && !e.altKey) {
+    // Alt+1..9 标签直达（v1.0.3 起：Mod+数字让位给标题切换；9 恒为最后一个标签）
+    // 用 e.code 判定：macOS 上 ⌥+数字的 e.key 是变音字符
+    if (e.altKey && !mod && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
       e.preventDefault()
-      const n = Number(key)
+      const n = Number(e.code.slice(5))
       tabs.activateIndex(n === 9 ? tabs.tabs.length - 1 : n - 1)
       return
     }
+    if (!mod) return
 
     switch (key) {
       case 'p':

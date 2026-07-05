@@ -128,6 +128,64 @@ export const toggleQuote: Command = (view) => {
   return true
 }
 
+// ---- 列表切换：行前缀操作。换型时先剥掉已有列表前缀（含任务框），避免叠加 ----
+
+const UL_RE = /^(\s*)[-*+]\s+(?!\[[ xX]\]\s)/
+const OL_RE = /^(\s*)\d+[.)]\s+/
+const TASK_RE = /^(\s*)[-*+]\s+\[[ xX]\]\s+/
+const ANY_LIST_RE = /^(\s*)(?:[-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+[.)]\s+)/
+
+function toggleList(kind: 'ul' | 'ol' | 'task'): Command {
+  const matchRe = kind === 'ul' ? UL_RE : kind === 'ol' ? OL_RE : TASK_RE
+  const prefixOf = (n: number) => (kind === 'ul' ? '- ' : kind === 'ol' ? `${n}. ` : '- [ ] ')
+  return (view) => {
+    const { state } = view
+    const lines: { from: number; text: string }[] = []
+    const seen = new Set<number>()
+    for (const range of state.selection.ranges) {
+      const first = state.doc.lineAt(range.from).number
+      const last = state.doc.lineAt(range.to).number
+      for (let n = first; n <= last; n++) {
+        if (!seen.has(n)) {
+          seen.add(n)
+          const line = state.doc.line(n)
+          lines.push({ from: line.from, text: line.text })
+        }
+      }
+    }
+    const content = lines.filter((l) => l.text.trim() !== '')
+    // 空行上触发：直接放一个列表前缀开写
+    if (!content.length) {
+      const pos = state.selection.main.head
+      const prefix = prefixOf(1)
+      view.dispatch({
+        changes: { from: pos, insert: prefix },
+        selection: EditorSelection.cursor(pos + prefix.length),
+        userEvent: 'input.format',
+      })
+      return true
+    }
+    const allMatch = content.every((l) => matchRe.test(l.text))
+    let num = 0
+    const changes = content.map((l) => {
+      const strip = ANY_LIST_RE.exec(l.text)
+      const indent = strip?.[1] ?? /^\s*/.exec(l.text)![0]
+      const stripLen = strip?.[0].length ?? indent.length
+      return {
+        from: l.from + indent.length,
+        to: l.from + stripLen,
+        insert: allMatch ? '' : prefixOf(++num),
+      }
+    })
+    view.dispatch({ changes, userEvent: 'input.format' })
+    return true
+  }
+}
+
+export const toggleUnorderedList = toggleList('ul')
+export const toggleOrderedList = toggleList('ol')
+export const toggleTaskList = toggleList('task')
+
 export const insertLink: Command = (view) => {
   const spec = view.state.changeByRange((range) => {
     const text = view.state.doc.sliceString(range.from, range.to)
@@ -180,6 +238,14 @@ export const bmdKeymap: KeyBinding[] = [
   { key: 'Mod-Shift-x', run: toggleStrikethrough },
   { key: 'Mod-e', run: toggleInlineCode },
   { key: 'Mod-k', run: insertLink },
+  // 标题主绑定 Mod+1–6（v1.0.3 起；标签直达让位给 Alt+数字，见 src/lib/shortcuts.ts）
+  { key: 'Mod-1', run: setHeading(1) },
+  { key: 'Mod-2', run: setHeading(2) },
+  { key: 'Mod-3', run: setHeading(3) },
+  { key: 'Mod-4', run: setHeading(4) },
+  { key: 'Mod-5', run: setHeading(5) },
+  { key: 'Mod-6', run: setHeading(6) },
+  // Mod+Alt+数字保留为兼容别名（0 = 回正文）
   { key: 'Mod-Alt-0', run: setHeading(0) },
   { key: 'Mod-Alt-1', run: setHeading(1) },
   { key: 'Mod-Alt-2', run: setHeading(2) },
@@ -187,6 +253,10 @@ export const bmdKeymap: KeyBinding[] = [
   { key: 'Mod-Alt-4', run: setHeading(4) },
   { key: 'Mod-Alt-5', run: setHeading(5) },
   { key: 'Mod-Alt-6', run: setHeading(6) },
+  // 列表：无序 Mod+L；有序/任务用 Mod+Alt 保住字母（Mod+O/Mod+X 已被打开文件/剪切占用）
+  { key: 'Mod-l', run: toggleUnorderedList },
+  { key: 'Mod-Alt-o', run: toggleOrderedList },
+  { key: 'Mod-Alt-x', run: toggleTaskList },
   { key: 'Mod-Shift-k', run: insertCodeBlock },
   { key: 'Mod-Shift-q', run: toggleQuote },
   { key: 'Mod-Shift-m', run: insertMathBlock },

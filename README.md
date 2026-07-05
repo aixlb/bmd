@@ -15,12 +15,12 @@
 
 </div>
 
-![bmd 亮色主题](docs/screenshot-light.png)
+![bmd 亮色主题](.github/assets/screenshot-light.png)
 
 <details>
 <summary>🌙 看看暗色主题</summary>
 
-![bmd 暗色主题](docs/screenshot-dark.png)
+![bmd 暗色主题](.github/assets/screenshot-dark.png)
 
 </details>
 

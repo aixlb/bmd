@@ -1,10 +1,11 @@
 <script setup lang="ts">
-// 设置面板（Obsidian 式）：左侧导航（通用 / AI 助手 / 第三方插件 + 插件设置页），右侧内容区
+// 设置面板（Obsidian 式）：左侧导航（通用 / AI 助手 / 第三方插件 + 插件设置页 / 关于），右侧内容区
 import { computed, nextTick, ref, watch } from 'vue'
+import logoUrl from '@/assets/logo-md.svg'
 import { exportHtml, exportPdf } from '@/export'
-import { ipc } from '@/lib/ipc'
+import { ipc, isTauri } from '@/lib/ipc'
 import { useAi } from '@/stores/ai'
-import { usePlugins } from '@/stores/plugins'
+import { APP_VERSION, usePlugins } from '@/stores/plugins'
 import { useUi } from '@/stores/ui'
 
 const ai = useAi()
@@ -55,6 +56,15 @@ async function togglePlugin(id: string, on: boolean) {
 function openPluginsDir() {
   if (plugins.pluginsDir) void ipc().revealInOs(plugins.pluginsDir)
 }
+
+/** 外链一律经系统浏览器打开（Tauri 走 opener 插件，浏览器预览新开标签） */
+function openLink(url: string) {
+  if (isTauri) {
+    void import('@tauri-apps/plugin-opener').then((m) => m.openUrl(url))
+  } else {
+    window.open(url, '_blank', 'noopener')
+  }
+}
 </script>
 
 <template>
@@ -84,6 +94,11 @@ function openPluginsDir() {
             >
               {{ t.title }}
             </button>
+
+            <div class="nav-group">其他</div>
+            <button class="nav-item" :class="{ on: nav === 'about' }" @click="nav = 'about'">
+              关于
+            </button>
           </aside>
 
           <main class="content">
@@ -93,6 +108,7 @@ function openPluginsDir() {
                   nav === 'general' ? '通用' :
                   nav === 'ai' ? 'AI 助手' :
                   nav === 'plugins' ? '第三方插件' :
+                  nav === 'about' ? '关于' :
                   activeTab?.title ?? '设置'
                 }}
               </h2>
@@ -225,6 +241,26 @@ function openPluginsDir() {
                 </div>
               </template>
               <p v-else class="empty">第三方插件仅在桌面应用中可用（浏览器预览环境无文件系统）。</p>
+            </section>
+
+            <!-- 关于 -->
+            <section v-else-if="nav === 'about'">
+              <div class="about">
+                <img class="about-logo" :src="logoUrl" alt="bmd logo" />
+                <div class="about-name">bmd · Bao Markdown</div>
+                <div class="about-sub">包 markdown</div>
+                <div class="about-ver">v{{ APP_VERSION }}</div>
+                <p class="about-desc">所见即所得 Markdown 编辑器——极快启动 · 即时渲染 · AI 写作副驾</p>
+                <div class="actions">
+                  <button class="act" @click="openLink('https://github.com/aixlb/bmd')">GitHub 仓库</button>
+                  <button class="act" @click="openLink('https://github.com/aixlb/bmd/blob/main/MANUAL.md')">用户手册</button>
+                  <button class="act" @click="openLink('https://github.com/aixlb/bmd/blob/main/CHANGELOG.md')">更新日志</button>
+                </div>
+                <button class="about-knock" @click="openLink('https://xhslink.com/m/vX0zH462eU')">
+                  有需求猛敲我 @玩AI的小笼包
+                </button>
+                <p class="about-copy">© 2026 玩AI的小笼包 · MIT License</p>
+              </div>
             </section>
 
             <!-- 插件注册的设置页 -->
@@ -544,6 +580,74 @@ h3 {
 .tab-host {
   font-size: 13px;
   line-height: 1.7;
+}
+
+/* ---- 关于 ---- */
+.about {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 34px;
+  text-align: center;
+}
+
+.about-logo {
+  width: 72px;
+  height: 72px;
+}
+
+.about-name {
+  margin-top: 14px;
+  font-size: 16px;
+  color: var(--bmd-text);
+}
+
+.about-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--bmd-text-faint);
+}
+
+.about-ver {
+  margin-top: 10px;
+  padding: 2px 12px;
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--bmd-text-dim);
+  background: color-mix(in srgb, var(--bmd-text) 5%, transparent);
+  border: 1px solid var(--bmd-border);
+  border-radius: 999px;
+}
+
+.about-desc {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  color: var(--bmd-text-dim);
+}
+
+.about .actions {
+  margin-top: 16px;
+}
+
+.about-knock {
+  margin-top: 20px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--bmd-text-faint);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 150ms;
+}
+
+.about-knock:hover {
+  color: var(--bmd-text);
+}
+
+.about-copy {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--bmd-text-faint);
 }
 
 .modal-enter-from,

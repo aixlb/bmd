@@ -1,8 +1,8 @@
 {
   "name": "bmd",
   "private": true,
-  "version": "1.0.0",
-  "description": "bmd (Bao Markdown) — Typora-style WYSIWYG markdown editor",
+  "version": "1.0.1",
+  "description": "bmd (Bao Markdown) — WYSIWYG markdown editor",
   "type": "module",
   "scripts": {
     "dev": "vite",

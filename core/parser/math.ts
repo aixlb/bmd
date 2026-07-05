@@ -7,17 +7,27 @@ import { tags } from '@lezer/highlight'
 const DOLLAR = 36
 const BACKSLASH = 92
 const NEWLINE = 10
+const SPACE = 32
+const TAB = 9
 
 function parseInlineMath(cx: InlineContext, next: number, pos: number): number {
   if (next !== DOLLAR) return -1
   if (cx.char(pos + 1) === DOLLAR) return -1 // $$ 由块级处理
   if (pos > cx.offset && cx.char(pos - 1) === BACKSLASH) return -1
+  // Pandoc 约束：开 $ 后必须紧跟非空白（"价格 $ 5" 不是公式）
+  const afterOpen = cx.char(pos + 1)
+  if (afterOpen === SPACE || afterOpen === TAB) return -1
 
   let end = -1
   for (let i = pos + 1; i < cx.end; i++) {
     const ch = cx.char(i)
     if (ch === NEWLINE) break
     if (ch === DOLLAR && cx.char(i - 1) !== BACKSLASH) {
+      // Pandoc 约束：闭 $ 前非空白、后不紧跟数字（"价格$5 和 $10" 不误判）
+      const prev = cx.char(i - 1)
+      if (prev === SPACE || prev === TAB) continue
+      const after = i + 1 < cx.end ? cx.char(i + 1) : -1
+      if (after >= 48 && after <= 57) continue
       end = i
       break
     }

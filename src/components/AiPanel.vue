@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import AiDiffModal from './AiDiffModal.vue'
 import AiMessage from './AiMessage.vue'
 import AiProviderModal from './AiProviderModal.vue'
@@ -31,16 +31,37 @@ async function send() {
   const text = input.value.trim()
   if (!text || ai.busy) return
   input.value = ''
+  stickToBottom.value = true // 用户主动发送，跳回底部
   await ai.send(text)
+}
+
+/** 是否吸附底部：用户往上滚后暂停自动滚底，滚回底部附近恢复 */
+const stickToBottom = ref(true)
+const NEAR_BOTTOM = 40
+
+function onListScroll() {
+  const el = listEl.value
+  if (!el) return
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM
+}
+
+async function scrollToBottom() {
+  stickToBottom.value = true
+  await nextTick()
+  listEl.value?.scrollTo({ top: listEl.value.scrollHeight })
 }
 
 watch(
   () => ai.current?.messages.map((m) => m.content.length).join(),
   async () => {
+    if (!stickToBottom.value) return
     await nextTick()
     listEl.value?.scrollTo({ top: listEl.value.scrollHeight })
   },
 )
+
+// 切换会话时重置吸附并滚到底部
+watch(() => ai.currentSessionId, () => void scrollToBottom())
 
 function startResize(e: PointerEvent) {
   resizing.value = true
@@ -49,9 +70,11 @@ function startResize(e: PointerEvent) {
     resizing.value = false
     window.removeEventListener('pointermove', move)
     window.removeEventListener('pointerup', up)
+    window.removeEventListener('pointercancel', up)
   }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', up)
+  window.addEventListener('pointercancel', up) // 触摸中断等场景也要撤监听
   e.preventDefault()
 }
 
@@ -94,6 +117,11 @@ function confirmReplace() {
   view.focus()
 }
 
+function closeSession(id: string) {
+  ai.deleteSession(id) // 进行中的请求由 store 负责取消
+  if (!ai.sessions.length) ai.newSession()
+}
+
 async function toggleMention() {
   mentionOpen.value = !mentionOpen.value
   if (mentionOpen.value) mentionFiles.value = await workspace.collectAllMd()
@@ -105,14 +133,20 @@ function toggleMentionFile(path: string) {
   else ai.mentionFiles.push(path)
 }
 
+// 浮动工具条的 ✦ 按钮（内核经 DOM 事件解耦）
+function onAiSelection() {
+  ai.panelVisible = true
+}
+
 onMounted(() => {
   void ai.restore().then(() => {
     if (!ai.sessions.length) ai.newSession()
   })
-  // 浮动工具条的 ✦ 按钮（内核经 DOM 事件解耦）
-  window.addEventListener('bmd:ai-selection', () => {
-    ai.panelVisible = true
-  })
+  window.addEventListener('bmd:ai-selection', onAiSelection)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('bmd:ai-selection', onAiSelection)
 })
 </script>
 
@@ -132,25 +166,26 @@ onMounted(() => {
         </option>
       </select>
       <button class="icon" title="模型配置" @click="ai.providerModalVisible = true">⚙</button>
-      <button class="icon" title="新会话" @click="ai.newSession()">＋</button>
-      <button
-        v-if="ai.sessions.length > 1"
-        class="icon"
-        title="删除当前会话"
-        @click="ai.current && ai.deleteSession(ai.current.id)"
-      >
-        🗑
-      </button>
       <button class="icon" :title="`关闭 ${keyHint('⌘J')}`" @click="ai.panelVisible = false">×</button>
     </header>
 
-    <div v-if="ai.sessions.length > 1" class="session-row">
-      <select :value="ai.currentSessionId" @change="ai.currentSessionId = ($event.target as HTMLSelectElement).value">
-        <option v-for="s in ai.sessions" :key="s.id" :value="s.id">{{ s.title }}</option>
-      </select>
+    <div class="session-tabs">
+      <button
+        v-for="s in ai.sessions"
+        :key="s.id"
+        class="session-tab"
+        :class="{ active: s.id === ai.currentSessionId }"
+        :title="s.title"
+        @click="ai.currentSessionId = s.id"
+      >
+        <span v-if="s.busy" class="busy-dot" />
+        <span class="tab-title">{{ s.title }}</span>
+        <span class="tab-close" title="关闭会话" @click.stop="closeSession(s.id)">×</span>
+      </button>
+      <button class="icon tab-add" title="新会话" @click="ai.newSession()">＋</button>
     </div>
 
-    <div ref="listEl" class="messages">
+    <div ref="listEl" class="messages" @scroll.passive="onListScroll">
       <div v-if="!ai.current?.messages.length" class="empty">
         <img class="empty-img" src="@/assets/ai-empty.png" alt="" draggable="false" />
         <p>我可以帮你续写、润色、翻译、答疑。</p>
@@ -309,19 +344,79 @@ onMounted(() => {
   background: color-mix(in srgb, var(--bmd-text) 8%, transparent);
 }
 
-.session-row {
+.session-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   padding: 0 10px 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
-.session-row select {
-  width: 100%;
-  padding: 4px 8px;
+.session-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.session-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  max-width: 150px;
+  padding: 3px 8px;
   font: inherit;
-  font-size: 12px;
-  color: var(--bmd-text-dim);
+  font-size: 11.5px;
+  color: var(--bmd-text-faint);
   background: transparent;
   border: 1px solid var(--bmd-border);
-  border-radius: 6px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.session-tab.active {
+  color: var(--bmd-text);
+  border-color: color-mix(in srgb, var(--bmd-accent-a) 55%, transparent);
+  background: color-mix(in srgb, var(--bmd-accent-a) 10%, transparent);
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  flex: none;
+  opacity: 0.5;
+  padding: 0 1px;
+}
+
+.tab-close:hover {
+  opacity: 1;
+}
+
+.tab-add {
+  flex: none;
+}
+
+.busy-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bmd-accent-a);
+  animation: bmd-busy-pulse 1s ease-in-out infinite;
+}
+
+@keyframes bmd-busy-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+
+  50% {
+    opacity: 1;
+  }
 }
 
 .messages {

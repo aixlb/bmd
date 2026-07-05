@@ -51,7 +51,10 @@ export interface Ipc {
   /** 原生静默导出 PDF（D8 V2）；非 Tauri 环境 reject，由调用方回退打印管线 */
   exportPdfNative(html: string, baseDir: string | null, outPath: string): Promise<void>
   savePastedImage(docPath: string, dataB64: string, ext: string): Promise<string>
+  /** 注册 HTML 只读预览，返回 iframe 可加载的 URL；非 Tauri 环境返回 null（回退 srcdoc） */
+  previewHtmlUrl(path: string): Promise<string | null>
   startWatch(root: string): Promise<void>
+  stopWatch(): Promise<void>
   onFsChanged(cb: (paths: string[]) => void): Promise<() => void>
   initialFiles(): Promise<string[]>
   // ---- AI（DESIGN §13） ----
@@ -140,7 +143,11 @@ function tauriIpc(): Ipc {
       const { open } = await import('@tauri-apps/plugin-dialog')
       const r = await open({
         multiple: false,
-        filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+        filters: [
+          { name: '支持的文件', extensions: ['md', 'markdown', 'html', 'htm'] },
+          { name: 'Markdown', extensions: ['md', 'markdown'] },
+          { name: 'HTML', extensions: ['html', 'htm'] },
+        ],
       })
       return typeof r === 'string' ? r : null
     },
@@ -158,7 +165,9 @@ function tauriIpc(): Ipc {
     exportPdfNative: (html, baseDir, outPath) => inv('export_pdf', { html, baseDir, outPath }),
     savePastedImage: (docPath, dataB64, ext) =>
       inv('save_pasted_image', { docPath, dataB64, ext }),
+    previewHtmlUrl: (path) => inv('register_html_preview', { path }),
     startWatch: (root) => inv('start_watch', { path: root }),
+    stopWatch: () => inv('stop_watch', {}),
     onFsChanged: async (cb) => {
       const { listen } = await import('@tauri-apps/api/event')
       return listen<string[]>('fs-changed', (e) => cb(e.payload))
@@ -255,9 +264,13 @@ graph LR
 
 正文结束。
 `,
-    '/demo/笔记/想法.md': '## 想法\n\n- **bmd** 要够快\n- 手感要像 Typora\n',
+    '/demo/笔记/想法.md': '## 想法\n\n- **bmd** 要够快\n- 手感要即时渲染\n',
     '/demo/笔记/清单.md': '# 清单\n\n1. 完成 M1\n2. 完成 M2\n',
     '/demo/参考.txt': 'not markdown',
+    '/demo/预览示例.html': `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>HTML 预览</title>
+<style>body{font:15px/1.8 -apple-system,sans-serif;max-width:640px;margin:40px auto;padding:0 24px}</style>
+</head><body><h1>HTML 只读预览</h1><p>这是 <strong>bmd</strong> 的 HTML 预览示例：只渲染，不可编辑。</p></body></html>`,
   }
   for (const [k, v] of Object.entries(defaults)) files.set(k, { content: v, mtime: ++clock })
   let session: Session | null = null
@@ -377,7 +390,11 @@ graph LR
       const stem = nameNoExt(docPath)
       return `assets/${stem}/img-${++clock}.${ext}`
     },
+    async previewHtmlUrl() {
+      return null // 浏览器/测试环境走 srcdoc 回退
+    },
     async startWatch() {},
+    async stopWatch() {},
     async onFsChanged() {
       return () => {}
     },

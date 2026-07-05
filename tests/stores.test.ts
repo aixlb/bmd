@@ -126,6 +126,30 @@ describe('tabs 打开/保存链路', () => {
     expect(tabs.activeId).toBeNull()
   })
 
+  it('批量关闭：左侧/右侧/其他；dirty 拒绝时保留该标签', async () => {
+    const tabs = useTabs()
+    await tabs.openFile('/ws/a.md')
+    const b = await tabs.openFile('/ws/b.md')
+    const c = await tabs.openFile('/ws/sub/c.md')
+
+    await tabs.closeLeft(b.id)
+    expect(tabs.tabs.map((t) => t.id)).toEqual([b.id, c.id])
+
+    await tabs.closeRight(b.id)
+    expect(tabs.tabs.map((t) => t.id)).toEqual([b.id])
+
+    const a2 = await tabs.openFile('/ws/a.md')
+    typeInto(a2.id, 'x')
+    mock.confirm = vi.fn(async () => false)
+    await tabs.closeOthers(b.id)
+    expect(tabs.tabs.map((t) => t.id)).toEqual([b.id, a2.id]) // dirty 拒绝关闭被保留
+
+    mock.confirm = vi.fn(async () => true)
+    await tabs.closeOthers(b.id)
+    expect(tabs.tabs.map((t) => t.id)).toEqual([b.id])
+    expect(tabs.activeId).toBe(b.id)
+  })
+
   it('标签轮换与序号跳转', async () => {
     const tabs = useTabs()
     const a = await tabs.openFile('/ws/a.md')
@@ -151,6 +175,46 @@ describe('tabs 打开/保存链路', () => {
     await fresh.restoreSession(snap)
     expect(fresh.tabs.map((t) => t.path)).toEqual(['/ws/a.md', '/ws/b.md'])
     expect(fresh.active?.path).toBe('/ws/b.md')
+  })
+})
+
+describe('HTML 只读预览标签', () => {
+  beforeEach(() => {
+    mock = createMockIpc({
+      '/ws/a.md': '# A\n',
+      '/ws/page.html': '<h1>hi</h1>',
+    })
+    setIpc(mock)
+  })
+
+  it('打开 .html：kind=html、保留 initialDoc 供 srcdoc；md 标签 kind=md', async () => {
+    const tabs = useTabs()
+    const h = await tabs.openFile('/ws/page.html')
+    expect(h.kind).toBe('html')
+    expect(h.initialDoc).toBe('<h1>hi</h1>')
+    expect(h.previewUrl).toBeNull() // mock 环境走 srcdoc 回退
+    const m = await tabs.openFile('/ws/a.md')
+    expect(m.kind).toBe('md')
+  })
+
+  it('html 标签不支持编辑/保存：saveTab 拒绝且零写入', async () => {
+    const tabs = useTabs()
+    const spy = vi.spyOn(mock, 'writeDocAtomic')
+    const h = await tabs.openFile('/ws/page.html')
+    expect(await tabs.saveTab(h.id)).toBe(false)
+    expect(await tabs.saveTab(h.id, { saveAs: true })).toBe(false)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('外部修改：html 标签静默刷新 initialDoc 与 mtime（驱动 iframe 重载）', async () => {
+    const tabs = useTabs()
+    const h = await tabs.openFile('/ws/page.html')
+    const oldMtime = h.mtimeMs
+    await mock.writeDocAtomic('/ws/page.html', '<h1>new</h1>', null)
+    await tabs.handleExternalChanges(['/ws/page.html'])
+    expect(h.initialDoc).toBe('<h1>new</h1>')
+    expect(h.mtimeMs).not.toBe(oldMtime)
+    expect(h.conflict).toBe(false)
   })
 })
 

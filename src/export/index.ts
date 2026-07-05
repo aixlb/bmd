@@ -7,7 +7,7 @@ import { useUi } from '@/stores/ui'
 function activeDoc(): { markdown: string; title: string; path: string | null } | null {
   const tabs = useTabs()
   const tab = tabs.active
-  if (!tab) return null
+  if (!tab || tab.kind === 'html') return null // HTML 标签是只读预览，不走 Markdown 导出
   const markdown = editorRegistry.getDoc(tab.id) ?? tab.initialDoc ?? ''
   return { markdown, title: tab.title.replace(/\.(md|markdown)$/i, ''), path: tab.path }
 }

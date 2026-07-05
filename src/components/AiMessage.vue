@@ -10,7 +10,10 @@ const html = ref('')
 watchEffect(() => {
   const content = props.msg.content
   if (props.msg.role === 'assistant') {
-    void renderChatMarkdown(content).then((h) => (html.value = h))
+    // 流式中间态不进缓存；异步返回时丢弃过期结果
+    void renderChatMarkdown(content, !props.msg.streaming).then((h) => {
+      if (props.msg.content === content) html.value = h
+    })
   }
 })
 

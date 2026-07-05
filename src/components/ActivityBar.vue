@@ -1,13 +1,29 @@
 <script setup lang="ts">
-// 左侧活动栏（Obsidian ribbon 式）：AI 面板开关 + 技能配置入口
+// 左侧活动栏（Obsidian ribbon 式）：侧边栏开关 + AI 面板开关 + 技能配置入口 + 插件注册的图标
 import { keyHint } from '@/lib/shortcuts'
 import { useAi } from '@/stores/ai'
+import { usePlugins } from '@/stores/plugins'
+import { useUi } from '@/stores/ui'
 
 const ai = useAi()
+const plugins = usePlugins()
+const ui = useUi()
 </script>
 
 <template>
   <nav class="rail">
+    <button
+      class="item"
+      :class="{ active: ui.sidebarVisible }"
+      :title="`侧边栏 ${keyHint('⌘\\')}`"
+      @click="ui.toggleSidebar()"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3.5" y="5" width="17" height="14" rx="2.5" />
+        <path d="M9.5 5 L9.5 19" />
+        <path v-if="ui.sidebarVisible" d="M6 9.5 L7.5 9.5 M6 12 L7.5 12" />
+      </svg>
+    </button>
     <button
       class="item"
       :class="{ active: ai.panelVisible }"
@@ -36,6 +52,15 @@ const ai = useAi()
         <path d="M19 2.8 L19.4 4.1 L20.7 4.5 L19.4 4.9 L19 6.2 L18.6 4.9 L17.3 4.5 L18.6 4.1 Z" fill="currentColor" stroke="none" />
       </svg>
     </button>
+    <!-- 插件注册的 ribbon 图标（app.addRibbonIcon） -->
+    <button
+      v-for="(r, i) in plugins.ribbons"
+      :key="`${r.pluginId}-${i}`"
+      class="item"
+      :title="r.title"
+      v-html="r.icon"
+      @click="r.onClick()"
+    />
   </nav>
 </template>
 

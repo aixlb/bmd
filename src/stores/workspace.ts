@@ -19,6 +19,7 @@ export const useWorkspace = defineStore('workspace', {
     async openFolder(path?: string) {
       const target = path ?? (await ipc().pickFolder())
       if (!target) return
+      const prev = this.root
       this.root = target
       this.children = {}
       this.expanded = {}
@@ -28,6 +29,15 @@ export const useWorkspace = defineStore('workspace', {
         await ipc().startWatch(target)
       } catch (e) {
         console.warn('[bmd] 目录监听启动失败', e)
+      }
+      // AI 聊天存档跟随工作区（动态 import 避免与 ai store 的模块循环）
+      if (prev !== target) {
+        try {
+          const { useAi } = await import('@/stores/ai')
+          await useAi().reloadForWorkspace(prev)
+        } catch (e) {
+          console.warn('[bmd] 切换工作区时聊天存档迁移失败', e)
+        }
       }
     },
 

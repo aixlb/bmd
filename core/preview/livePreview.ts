@@ -184,10 +184,17 @@ function decorateAutolink(deco: Range<Decoration>[], state: EditorState, node: S
   )
 }
 
-function decorateQuote(deco: Range<Decoration>[], state: EditorState, node: SyntaxNode) {
-  // 引用块每行加线级样式；"> " 标记按行 reveal
-  const first = state.doc.lineAt(node.from).number
-  const last = state.doc.lineAt(node.to).number
+function decorateQuote(
+  deco: Range<Decoration>[],
+  state: EditorState,
+  node: SyntaxNode,
+  rangeFrom: number,
+  rangeTo: number,
+) {
+  // 引用块每行加线级样式；"> " 标记按行 reveal。
+  // 超长块只处理与可见区间相交的行，避免光标每动一下全量重建（性能）
+  const first = state.doc.lineAt(Math.max(node.from, rangeFrom)).number
+  const last = state.doc.lineAt(Math.min(node.to, rangeTo)).number
   for (let n = first; n <= last; n++) {
     deco.push(quoteLine.range(state.doc.line(n).from))
   }
@@ -236,10 +243,19 @@ function decorateTaskMarker(deco: Range<Decoration>[], state: EditorState, node:
   }
 }
 
-function decorateFencedCode(deco: Range<Decoration>[], state: EditorState, node: SyntaxNode) {
+function decorateFencedCode(
+  deco: Range<Decoration>[],
+  state: EditorState,
+  node: SyntaxNode,
+  rangeFrom: number,
+  rangeTo: number,
+) {
   const first = state.doc.lineAt(node.from)
   const last = state.doc.lineAt(node.to)
-  for (let n = first.number; n <= last.number; n++) {
+  // 超长代码块只处理与可见区间相交的行（首/末行判定仍用块的真实边界）
+  const startN = Math.max(first.number, state.doc.lineAt(Math.max(node.from, rangeFrom)).number)
+  const endN = Math.min(last.number, state.doc.lineAt(Math.min(node.to, rangeTo)).number)
+  for (let n = startN; n <= endN; n++) {
     const line = state.doc.line(n)
     deco.push(codeLine.range(line.from))
     if (n === first.number || (n === last.number && /^\s*(```|~~~)/.test(line.text))) {
@@ -292,7 +308,7 @@ export function buildInlineDecorations(
             }
             return
           case 'Blockquote':
-            decorateQuote(deco, state, node.node)
+            decorateQuote(deco, state, node.node, from, to)
             return
           case 'QuoteMark':
             decorateQuoteMark(deco, state, node.node)
@@ -304,7 +320,7 @@ export function buildInlineDecorations(
             decorateTaskMarker(deco, state, node.node)
             return
           case 'FencedCode':
-            decorateFencedCode(deco, state, node.node)
+            decorateFencedCode(deco, state, node.node, from, to)
             return
         }
       },

@@ -227,12 +227,24 @@ fn blob_to_vec(b: &[u8]) -> Vec<f32> {
 // ---- 存储 ----
 
 fn db_path(app: &tauri::AppHandle, workspace: &str) -> Result<PathBuf, String> {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    workspace.hash(&mut h);
+    use sha2::{Digest, Sha256};
     let dir = app.path().app_data_dir().map_err(err)?.join("rag");
     std::fs::create_dir_all(&dir).map_err(err)?;
-    Ok(dir.join(format!("{:x}.db", h.finish())))
+    // sha256 前 8 字节：跨 Rust 版本稳定（DefaultHasher 不保证）
+    let digest = Sha256::digest(workspace.as_bytes());
+    let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let file = dir.join(format!("{hex}.db"));
+    // 迁移：旧版命名（DefaultHasher）的索引存在且新库不存在时改名沿用
+    if !file.exists() {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        workspace.hash(&mut h);
+        let legacy = dir.join(format!("{:x}.db", h.finish()));
+        if legacy.exists() {
+            let _ = std::fs::rename(&legacy, &file);
+        }
+    }
+    Ok(file)
 }
 
 fn open_db(path: &PathBuf) -> Result<rusqlite::Connection, String> {
@@ -429,25 +441,27 @@ pub async fn rag_search(
     if let Some(cfg) = &embed {
         let with_vec: Vec<&ChunkRow> = rows.iter().filter(|r| r.3.is_some()).collect();
         if !with_vec.is_empty() {
-            if let Ok(qv) = embed_texts(cfg, &[query.clone()]).await {
-                let qv = &qv[0];
-                let mut scored: Vec<(usize, f32)> = with_vec
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| (i, cosine(qv, &blob_to_vec(r.3.as_ref().unwrap()))))
-                    .filter(|(_, s)| *s > 0.25)
-                    .collect();
-                scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-                return Ok(scored
-                    .into_iter()
-                    .take(k)
-                    .map(|(i, s)| RagHit {
-                        path: with_vec[i].0.clone(),
-                        heading: with_vec[i].1.clone(),
-                        snippet: snippet(&with_vec[i].2),
-                        score: s,
-                    })
-                    .collect());
+            // 嵌入服务可能返回空 data；release 下 panic=abort，必须判空回退 BM25
+            if let Ok(qvs) = embed_texts(cfg, &[query.clone()]).await {
+                if let Some(qv) = qvs.first() {
+                    let mut scored: Vec<(usize, f32)> = with_vec
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| (i, cosine(qv, &blob_to_vec(r.3.as_ref().unwrap()))))
+                        .filter(|(_, s)| *s > 0.25)
+                        .collect();
+                    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+                    return Ok(scored
+                        .into_iter()
+                        .take(k)
+                        .map(|(i, s)| RagHit {
+                            path: with_vec[i].0.clone(),
+                            heading: with_vec[i].1.clone(),
+                            snippet: snippet(&with_vec[i].2),
+                            score: s,
+                        })
+                        .collect());
+                }
             }
         }
     }

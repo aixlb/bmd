@@ -28,6 +28,12 @@ export interface ChatSession {
   id: string
   title: string
   messages: ChatMsg[]
+  /** 运行时状态（不持久化）：本会话是否有进行中的请求 */
+  busy?: boolean
+  /** 运行时状态（不持久化）：进行中请求的 id，用于取消 */
+  requestId?: string | null
+  /** 运行时状态（不持久化）：本会话最近一次 RAG 检索来源 */
+  sources?: RagHit[]
 }
 
 export interface QuickCommand {
@@ -76,8 +82,8 @@ export const useAi = defineStore('ai', {
     customCommands: loadCustomCommands(),
     sessions: [] as ChatSession[],
     currentSessionId: null as string | null,
-    busy: false,
-    requestId: null as string | null,
+    /** 会话历史是否已从磁盘恢复过（防止面板反复挂载时覆盖运行中的会话） */
+    restored: false,
     includeDoc: true,
     includeSelection: true,
     mentionFiles: [] as string[],
@@ -89,7 +95,6 @@ export const useAi = defineStore('ai', {
     embed: JSON.parse(localStorage.getItem('bmd.ai.embed') ?? 'null') as EmbedConfig | null,
     ragIndexing: false,
     ragIndexed: false,
-    lastSources: [] as RagHit[],
   }),
 
   getters: {
@@ -104,6 +109,14 @@ export const useAi = defineStore('ai', {
     },
     current(): ChatSession | null {
       return this.sessions.find((s) => s.id === this.currentSessionId) ?? null
+    },
+    /** 当前会话是否有进行中的请求（busy 按会话隔离，互不阻塞） */
+    busy(): boolean {
+      return !!this.current?.busy
+    },
+    /** 当前会话最近一次 RAG 检索来源（按会话隔离，并行请求不串台） */
+    lastSources(): RagHit[] {
+      return this.current?.sources ?? []
     },
   },
 
@@ -139,18 +152,27 @@ export const useAi = defineStore('ai', {
     },
 
     deleteSession(id: string) {
+      const target = this.sessions.find((s) => s.id === id)
+      if (target?.requestId) void ipc().aiCancel(target.requestId)
       this.sessions = this.sessions.filter((s) => s.id !== id)
       if (this.currentSessionId === id) this.currentSessionId = this.sessions[0]?.id ?? null
       void this.persist()
     },
 
     async restore() {
+      if (this.restored) return
+      this.restored = true
       const ws = useWorkspace()
       try {
         const raw = await ipc().loadChats(ws.root ?? '__global__')
         const data = JSON.parse(raw)
         if (Array.isArray(data?.sessions)) {
-          this.sessions = data.sessions
+          // 剥离历史数据里可能残留的运行时字段
+          this.sessions = data.sessions.map((s: ChatSession) => ({
+            id: s.id,
+            title: s.title,
+            messages: s.messages ?? [],
+          }))
           this.currentSessionId = data.current ?? this.sessions[0]?.id ?? null
         }
       } catch {
@@ -158,17 +180,38 @@ export const useAi = defineStore('ai', {
       }
     },
 
-    async persist() {
+    /** 落盘；rootOverride 用于工作区切换时把会话写回旧工作区（undefined = 当前根） */
+    async persist(rootOverride?: string | null) {
       const ws = useWorkspace()
-      // 流式中间态不落盘
+      const root = rootOverride === undefined ? ws.root : rootOverride
+      // 流式中间态与运行时字段不落盘
       const sessions = this.sessions.map((s) => ({
-        ...s,
+        id: s.id,
+        title: s.title,
         messages: s.messages.filter((m) => !m.streaming),
       }))
       await ipc().saveChats(
-        ws.root ?? '__global__',
+        root ?? '__global__',
         JSON.stringify({ sessions, current: this.currentSessionId }),
       )
+    },
+
+    /** 工作区切换（FR 修复 #7）：会话按旧根落盘，再按新根恢复，避免串档 */
+    async reloadForWorkspace(prevRoot: string | null) {
+      // 旧工作区进行中的请求全部取消
+      for (const s of this.sessions) {
+        if (s.requestId) void ipc().aiCancel(s.requestId)
+        s.busy = false
+        s.requestId = null
+      }
+      if (this.restored) {
+        await this.persist(prevRoot)
+      }
+      this.sessions = []
+      this.currentSessionId = null
+      this.restored = false
+      await this.restore()
+      if (!this.sessions.length) this.newSession()
     },
 
     async toggleRag() {
@@ -198,7 +241,7 @@ export const useAi = defineStore('ai', {
     },
 
     /** 组装 system 上下文（DESIGN §13.3 预算与优先级：选区 > 文档 > @文件 > RAG） */
-    async buildSystem(query = ''): Promise<string | null> {
+    async buildSystem(query = '', session?: ChatSession): Promise<string | null> {
       const tabs = useTabs()
       const parts: string[] = [
         '你是 bmd Markdown 编辑器内置的写作助手。回答使用中文（除非用户要求其他语言）。涉及改写/续写时输出合法的 markdown 正文，不要用代码块包裹整体答案。',
@@ -232,8 +275,8 @@ export const useAi = defineStore('ai', {
         }
       }
 
-      // RAG 检索片段（FR-39）
-      this.lastSources = []
+      // RAG 检索片段（FR-39）；来源挂在发起请求的会话上
+      if (session) session.sources = []
       const ws = useWorkspace()
       if (this.ragEnabled && ws.root && query && budget > 500) {
         await this.ensureIndex()
@@ -242,7 +285,7 @@ export const useAi = defineStore('ai', {
           const active = tabs.active?.path
           const usable = hits.filter((h) => h.path !== active)
           if (usable.length) {
-            this.lastSources = usable
+            if (session) session.sources = usable
             const block = usable
               .map((h) => `《${h.path.split('/').pop()} · ${h.heading}》\n${h.snippet}`)
               .join('\n---\n')
@@ -257,8 +300,9 @@ export const useAi = defineStore('ai', {
     },
 
     async send(text: string) {
-      if (this.busy || !text.trim()) return
+      if (!text.trim()) return
       const session = this.current ?? this.newSession()
+      if (session.busy) return
       if (session.messages.length === 0) {
         session.title = text.slice(0, 24)
       }
@@ -267,9 +311,10 @@ export const useAi = defineStore('ai', {
       // 经响应式代理操作，流式增量才会驱动界面
       const assistant = session.messages[session.messages.length - 1]
 
-      this.busy = true
-      this.requestId = nextId('req')
-      const system = await this.buildSystem(text)
+      session.busy = true
+      const requestId = nextId('req')
+      session.requestId = requestId
+      const system = await this.buildSystem(text, session)
       // 历史裁剪：最近 12 条
       const history = session.messages
         .filter((m) => !m.streaming && !m.error)
@@ -279,14 +324,16 @@ export const useAi = defineStore('ai', {
       try {
         await ipc().aiChat(
           {
-            requestId: this.requestId,
+            requestId,
             provider: { ...this.activeProvider },
             system,
             messages: history,
           },
           (e) => {
-            if (e.type === 'delta') assistant.content += e.text
-            else if (e.type === 'error') {
+            // 用户已「停止」后迟到的增量直接丢弃
+            if (e.type === 'delta') {
+              if (assistant.streaming) assistant.content += e.text
+            } else if (e.type === 'error') {
               assistant.error = e.message
               assistant.streaming = false
             } else if (e.type === 'done') {
@@ -298,17 +345,26 @@ export const useAi = defineStore('ai', {
         assistant.error = String(err)
       } finally {
         assistant.streaming = false
-        this.busy = false
-        this.requestId = null
+        // 仅当仍是本请求时才清理，避免 stop 后新请求的状态被旧请求的 finally 误清
+        if (session.requestId === requestId) {
+          session.busy = false
+          session.requestId = null
+        }
         void this.persist()
       }
     },
 
-    async stop() {
-      if (this.requestId) await ipc().aiCancel(this.requestId)
-      const streaming = this.current?.messages.find((m) => m.streaming)
+    /** 停止指定会话的生成；缺省停止当前会话 */
+    async stop(sessionId?: string) {
+      const session = sessionId
+        ? this.sessions.find((s) => s.id === sessionId)
+        : this.current
+      if (!session) return
+      if (session.requestId) await ipc().aiCancel(session.requestId)
+      const streaming = session.messages.find((m) => m.streaming)
       if (streaming) streaming.streaming = false
-      this.busy = false
+      session.busy = false
+      session.requestId = null
     },
 
     /** 快捷指令：填充 {sel}/{doc} 占位后发送 */
@@ -316,11 +372,16 @@ export const useAi = defineStore('ai', {
       const view = editorRegistry.getActiveView()
       const sel = view?.state.selection.main
       const selText = sel && !sel.empty ? view!.state.doc.sliceString(sel.from, sel.to) : ''
+      const tabs = useTabs()
+      const docText = tabs.active
+        ? (editorRegistry.getDoc(tabs.active.id) ?? tabs.active.initialDoc ?? '').slice(0, CONTEXT_CHAR_BUDGET)
+        : ''
+      const fill = (p: string) => p.replace('{doc}', docText)
       if (cmd.prompt.includes('{sel}') && !selText) {
-        await this.send(cmd.prompt.replace('{sel}', '（用户未选中文本，请基于当前文档处理）'))
+        await this.send(fill(cmd.prompt).replace('{sel}', '（用户未选中文本，请基于当前文档处理）'))
         return
       }
-      await this.send(cmd.prompt.replace('{sel}', selText))
+      await this.send(fill(cmd.prompt).replace('{sel}', selText))
     },
   },
 })

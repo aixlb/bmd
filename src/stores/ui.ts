@@ -12,7 +12,7 @@ function initialTheme(): Theme {
 
 export const useUi = defineStore('ui', {
   state: () => ({
-    sidebarVisible: true,
+    sidebarVisible: localStorage.getItem('bmd.sidebar') !== 'off',
     sidebarWidth: 260,
     sidebarView: 'files' as 'files' | 'outline',
     theme: initialTheme(),
@@ -30,6 +30,7 @@ export const useUi = defineStore('ui', {
   actions: {
     toggleSidebar() {
       this.sidebarVisible = !this.sidebarVisible
+      localStorage.setItem('bmd.sidebar', this.sidebarVisible ? 'on' : 'off')
     },
     setSidebarWidth(w: number) {
       this.sidebarWidth = Math.min(400, Math.max(200, w))

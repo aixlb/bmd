@@ -1,10 +1,11 @@
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::Manager;
+use tokio::sync::Notify;
 
 // AI 流式代理（DESIGN.md §13.1）：双协议适配（Anthropic Messages / OpenAI
 // Chat Completions），reqwest SSE → Tauri Channel 逐增量推送。
@@ -73,9 +74,18 @@ fn cancels() -> &'static Mutex<HashSet<String>> {
     C.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+/// 进行中请求的取消唤醒器：流停滞时也能立即中断（不必等下一个 chunk）
+fn cancel_notifies() -> &'static Mutex<HashMap<String, Arc<Notify>>> {
+    static C: OnceLock<Mutex<HashMap<String, Arc<Notify>>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 #[tauri::command]
 pub async fn ai_cancel(request_id: String) -> Result<(), String> {
-    cancels().lock().unwrap().insert(request_id);
+    cancels().lock().unwrap().insert(request_id.clone());
+    if let Some(n) = cancel_notifies().lock().unwrap().get(&request_id) {
+        n.notify_one();
+    }
     Ok(())
 }
 
@@ -224,12 +234,51 @@ pub async fn ai_chat(
     on_event: Channel<AiEvent>,
 ) -> Result<(), String> {
     cancels().lock().unwrap().remove(&request_id);
+    let notify = Arc::new(Notify::new());
+    cancel_notifies()
+        .lock()
+        .unwrap()
+        .insert(request_id.clone(), notify.clone());
     let key = get_key(&provider.id);
-    let client = reqwest::Client::new();
-    let resp = build_request(&client, &provider, &system, &messages, &key)
-        .send()
-        .await
-        .map_err(err)?;
+    // 仅限连接阶段超时；流式响应本身可长时间进行，不设总超时
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            cancel_notifies().lock().unwrap().remove(&request_id);
+            return Err(err(e));
+        }
+    };
+    let result = run_chat(
+        &client, &request_id, &provider, &system, &messages, &key, &on_event, &notify,
+    )
+    .await;
+    // 请求结束后统一清理注册表与取消标记，避免迟到的 ai_cancel 永久残留
+    cancel_notifies().lock().unwrap().remove(&request_id);
+    cancels().lock().unwrap().remove(&request_id);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_chat(
+    client: &reqwest::Client,
+    request_id: &str,
+    provider: &ProviderConfig,
+    system: &Option<String>,
+    messages: &[ChatMessage],
+    key: &Option<String>,
+    on_event: &Channel<AiEvent>,
+    cancel: &Notify,
+) -> Result<(), String> {
+    // 连接阶段也可被取消
+    let sent = tokio::select! {
+        biased;
+        _ = cancel.notified() => return Ok(()),
+        r = build_request(client, provider, system, messages, key).send() => r,
+    };
+    let resp = sent.map_err(err)?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -242,8 +291,15 @@ pub async fn ai_chat(
 
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        if cancels().lock().unwrap().remove(&request_id) {
+    loop {
+        // select 取消唤醒：流停滞时 ai_cancel 也能立即中断连接
+        let next = tokio::select! {
+            biased;
+            _ = cancel.notified() => return Ok(()),
+            c = stream.next() => c,
+        };
+        let Some(chunk) = next else { break };
+        if cancels().lock().unwrap().remove(request_id) {
             return Ok(());
         }
         let chunk = chunk.map_err(err)?;
@@ -272,12 +328,24 @@ pub async fn ai_chat(
 // ---- 会话持久化（AppData/chats/<hash>.json） ----
 
 fn chats_file(app: &tauri::AppHandle, workspace: &str) -> Result<std::path::PathBuf, String> {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    workspace.hash(&mut h);
+    use sha2::{Digest, Sha256};
     let dir = app.path().app_data_dir().map_err(err)?.join("chats");
     std::fs::create_dir_all(&dir).map_err(err)?;
-    Ok(dir.join(format!("{:x}.json", h.finish())))
+    // sha256 前 8 字节：跨 Rust 版本稳定（DefaultHasher 不保证）
+    let digest = Sha256::digest(workspace.as_bytes());
+    let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let file = dir.join(format!("{hex}.json"));
+    // 迁移：旧版命名（DefaultHasher）的存档存在且新档不存在时改名沿用
+    if !file.exists() {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        workspace.hash(&mut h);
+        let legacy = dir.join(format!("{:x}.json", h.finish()));
+        if legacy.exists() {
+            let _ = std::fs::rename(&legacy, &file);
+        }
+    }
+    Ok(file)
 }
 
 #[tauri::command]
@@ -292,7 +360,10 @@ pub async fn load_chats(app: tauri::AppHandle, workspace: String) -> Result<Stri
 #[tauri::command]
 pub async fn save_chats(app: tauri::AppHandle, workspace: String, json: String) -> Result<(), String> {
     let file = chats_file(&app, &workspace)?;
-    std::fs::write(&file, json).map_err(err)
+    // 原子写：临时文件 + rename，崩溃不截断存档
+    let tmp = file.with_extension("json.tmp");
+    std::fs::write(&tmp, json).map_err(err)?;
+    std::fs::rename(&tmp, &file).map_err(err)
 }
 
 #[cfg(test)]

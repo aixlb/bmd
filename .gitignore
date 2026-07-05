@@ -7,6 +7,9 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 
+# Claude 本地配置（不入库）
+.claude/
+
 # Editor / OS
 .DS_Store
 Thumbs.db

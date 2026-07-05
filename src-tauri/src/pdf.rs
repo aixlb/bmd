@@ -62,7 +62,11 @@ pub fn handle_protocol<R: Runtime>(
     }
 }
 
-fn resp(status: u16, mime: &str, body: Vec<u8>) -> tauri::http::Response<Cow<'static, [u8]>> {
+pub(crate) fn resp(
+    status: u16,
+    mime: &str,
+    body: Vec<u8>,
+) -> tauri::http::Response<Cow<'static, [u8]>> {
     tauri::http::Response::builder()
         .status(status)
         .header("content-type", mime)
@@ -71,7 +75,7 @@ fn resp(status: u16, mime: &str, body: Vec<u8>) -> tauri::http::Response<Cow<'st
 }
 
 /// "/<id>/<rest>" → (id, rest)；空 rest 视为 index.html
-fn parse_request_path(path: &str) -> Option<(u64, &str)> {
+pub(crate) fn parse_request_path(path: &str) -> Option<(u64, &str)> {
     let mut it = path.trim_start_matches('/').splitn(2, '/');
     let id = it.next()?.parse::<u64>().ok()?;
     let rest = it.next().unwrap_or("");
@@ -98,8 +102,8 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// 与编辑器一致：允许 ../ 引用工作区外图片，但只服务真实存在的图片文件
-fn resolve_asset(base: &Path, rel: &str) -> Option<PathBuf> {
+/// 与编辑器一致：允许 ../ 引用工作区外资源，但只服务真实存在的文件
+pub(crate) fn resolve_asset(base: &Path, rel: &str) -> Option<PathBuf> {
     let rel = percent_decode(rel)?;
     if Path::new(&rel).is_absolute() {
         return None;
@@ -108,7 +112,7 @@ fn resolve_asset(base: &Path, rel: &str) -> Option<PathBuf> {
     target.is_file().then_some(target)
 }
 
-fn image_mime(path: &str) -> Option<&'static str> {
+pub(crate) fn image_mime(path: &str) -> Option<&'static str> {
     let ext = path.rsplit('.').next()?.to_ascii_lowercase();
     Some(match ext.as_str() {
         "png" => "image/png",

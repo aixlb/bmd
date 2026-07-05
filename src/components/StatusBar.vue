@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { usePlugins } from '@/stores/plugins'
 import { useTabs } from '@/stores/tabs'
 import { useUi } from '@/stores/ui'
 
+const plugins = usePlugins()
 const tabs = useTabs()
 const ui = useUi()
 
@@ -17,13 +19,23 @@ const savedLabel = computed(() => {
 
 <template>
   <footer class="statusbar">
-    <span v-if="tabs.active" class="item">
+    <span v-if="tabs.active?.kind === 'html'" class="item">HTML 只读预览</span>
+    <span v-if="tabs.active && tabs.active.kind !== 'html'" class="item">
       {{ ui.counts.words }} 字 · {{ ui.counts.chars }} 字符
     </span>
-    <span v-if="tabs.active" class="item">
+    <span v-if="tabs.active && tabs.active.kind !== 'html'" class="item">
       行 {{ ui.cursor.line }}，列 {{ ui.cursor.col }}
     </span>
     <span class="spacer" />
+    <!-- 插件注册的状态栏项（app.addStatusBarItem） -->
+    <span
+      v-for="s in plugins.statusItems"
+      :key="s.id"
+      class="item"
+      :class="{ clickable: !!s.onClick }"
+      :title="s.title"
+      @click="s.onClick?.()"
+    >{{ s.text }}</span>
     <span v-if="tabs.active?.dirty" class="item dirty">● 未保存</span>
     <span v-else-if="savedLabel" class="item saved">✓ {{ savedLabel }}</span>
   </footer>
@@ -45,6 +57,14 @@ const savedLabel = computed(() => {
 
 .spacer {
   flex: 1;
+}
+
+.clickable {
+  cursor: pointer;
+}
+
+.clickable:hover {
+  color: var(--bmd-text);
 }
 
 .dirty {

@@ -110,11 +110,19 @@ export function serializeTable(model: TableModel): string {
 
 /** 表格就地编辑 widget（FR-11b，M4）：contentEditable 单元格 + Tab 跳格 + 增删行列 */
 export class TableWidget extends WidgetType {
-  constructor(readonly src: string) {
+  /**
+   * @param src 表格源码（语法节点区间的切片）
+   * @param leading 装饰起点（行首）到源码真实起点的偏移；缩进表格时非 0，
+   *                写回必须加上该偏移，否则替换区间左移会损坏文档
+   */
+  constructor(
+    readonly src: string,
+    readonly leading = 0,
+  ) {
     super()
   }
   eq(other: TableWidget) {
-    return other.src === this.src
+    return other.src === this.src && other.leading === this.leading
   }
 
   toDOM(view: EditorView) {
@@ -135,10 +143,14 @@ export class TableWidget extends WidgetType {
 
     /** 把当前 DOM 状态序列化回文档（单事务，可一次撤销） */
     const commit = (m?: TableModel) => {
-      const pos = view.posAtDOM(wrap)
-      if (pos < 0) return
+      const base = view.posAtDOM(wrap)
+      if (base < 0) return
+      // 装饰按行对齐，源码可能有缩进：写回用源码真实区间
+      const pos = base + this.leading
       const next = serializeTable(m ?? readModel())
-      if (next === view.state.doc.sliceString(pos, pos + this.src.length)) return
+      const current = view.state.doc.sliceString(pos, pos + this.src.length)
+      if (current !== this.src) return // 区间与源码对不上（文档已变），放弃写回防止损坏
+      if (next === current) return
       view.dispatch({
         changes: { from: pos, to: pos + this.src.length, insert: next },
         userEvent: 'input.table-edit',
@@ -182,7 +194,7 @@ export class TableWidget extends WidgetType {
         if (next >= cells.length) {
           const m = readModel()
           m.rows.push(model.header.map(() => ''))
-          pendingFocus = { from: view.posAtDOM(wrap), cell: idx + 1 }
+          pendingFocusMap.set(view, { from: view.posAtDOM(wrap), cell: idx + 1 })
           commit(m)
         } else if (next >= 0) {
           ;(cells[next] as HTMLElement).focus()
@@ -250,9 +262,9 @@ export class TableWidget extends WidgetType {
     wrap.append(bar, table)
 
     // 提交重建后恢复焦点到目标单元格
-    if (pendingFocus !== null) {
-      const want = pendingFocus
-      pendingFocus = null
+    const want = pendingFocusMap.get(view)
+    if (want) {
+      pendingFocusMap.delete(view)
       requestAnimationFrame(() => {
         const pos = view.posAtDOM(wrap)
         if (pos === want.from || want.from < 0) cellAt(want.cell)?.focus()
@@ -266,4 +278,5 @@ export class TableWidget extends WidgetType {
   }
 }
 
-let pendingFocus: { from: number; cell: number } | null = null
+/** 待恢复焦点按视图隔离，多编辑器实例不串位 */
+const pendingFocusMap = new WeakMap<EditorView, { from: number; cell: number }>()

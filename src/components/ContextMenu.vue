@@ -31,6 +31,7 @@ function showMenu(x: number, y: number, items: MenuItem[]) {
 }
 
 function askText(title: string, initial = ''): Promise<string | null> {
+  prompt.resolve?.(null) // 前一个未决弹窗按取消收尾，Promise 不悬挂
   prompt.title = title
   prompt.value = initial
   prompt.visible = true

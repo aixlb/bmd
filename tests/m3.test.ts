@@ -41,8 +41,8 @@ describe('数学语法解析', () => {
     expect(nodeNames('质能方程 $e=mc^2$ 成立')).toContain('InlineMath')
   })
 
-  it('$$ 不被行内数学吞掉', () => {
-    expect(nodeNames('价格 $5 和 $6 各一')).toContain('InlineMath') // $5 和 $6 之间的内容
+  it('货币写法 $5 和 $6 不误判为行内数学（Pandoc 邻接约束）', () => {
+    expect(nodeNames('价格 $5 和 $6 各一')).not.toContain('InlineMath')
   })
 
   it('空 $$ 与转义 \\$ 不解析为行内数学', () => {

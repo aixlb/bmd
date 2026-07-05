@@ -3,6 +3,7 @@
 mod ai;
 mod commands;
 mod pdf;
+mod preview;
 mod rag;
 mod watcher;
 
@@ -33,7 +34,9 @@ fn main() {
         )
         .manage(watcher::WatchState::default())
         .manage(pdf::PdfState::default())
+        .manage(preview::PreviewState::default())
         .register_uri_scheme_protocol(pdf::PROTOCOL, pdf::handle_protocol)
+        .register_uri_scheme_protocol(preview::PROTOCOL, preview::handle_protocol)
         .invoke_handler(tauri::generate_handler![
             commands::scan_dir,
             commands::search_text,
@@ -47,6 +50,7 @@ fn main() {
             commands::save_session,
             commands::save_pasted_image,
             watcher::start_watch,
+            watcher::stop_watch,
             initial_files,
             ai::set_api_key,
             ai::has_api_key,
@@ -57,6 +61,7 @@ fn main() {
             rag::rag_index,
             rag::rag_search,
             pdf::export_pdf,
+            preview::register_html_preview,
         ])
         .setup(|app| {
             let window = app

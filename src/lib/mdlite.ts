@@ -12,12 +12,17 @@ function load(): Promise<MarkdownIt> {
 
 const cache = new Map<string, string>()
 
-export async function renderChatMarkdown(src: string): Promise<string> {
-  const hit = cache.get(src)
-  if (hit) return hit
+/** @param cacheable 流式中间态传 false：一次性内容不进缓存，避免挤掉有效条目 */
+export async function renderChatMarkdown(src: string, cacheable = true): Promise<string> {
+  if (cacheable) {
+    const hit = cache.get(src)
+    if (hit) return hit
+  }
   const md = await load()
   const html = md.render(src)
-  if (cache.size > 300) cache.clear()
-  cache.set(src, html)
+  if (cacheable) {
+    if (cache.size > 300) cache.clear()
+    cache.set(src, html)
+  }
   return html
 }

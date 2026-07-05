@@ -13,15 +13,18 @@ import SkillModal from './components/SkillModal.vue'
 import SplashScreen from './components/SplashScreen.vue'
 import StatusBar from './components/StatusBar.vue'
 import TitleBar from './components/TitleBar.vue'
+import { isOpenablePath } from '@/lib/fileTypes'
 import { ipc, isTauri } from '@/lib/ipc'
 import { registerMenu } from '@/lib/menuBus'
 import { useShortcuts } from '@/lib/shortcuts'
 import { useAi } from '@/stores/ai'
+import { usePlugins } from '@/stores/plugins'
 import { useTabs } from '@/stores/tabs'
 import { useUi } from '@/stores/ui'
 import { useWorkspace } from '@/stores/workspace'
 
 const ai = useAi()
+const plugins = usePlugins()
 const tabs = useTabs()
 const ui = useUi()
 const workspace = useWorkspace()
@@ -32,13 +35,19 @@ useShortcuts()
 
 let sessionTimer: ReturnType<typeof setTimeout> | null = null
 
-/** 打开系统递来的路径（拖拽入窗 / 双击打开方式，FR-24） */
+/** 打开系统递来的路径（拖拽入窗 / 双击打开方式，FR-24）；HTML 打开为只读预览 */
 async function openIncoming(paths: string[]) {
   for (const p of paths) {
-    if (/\.(md|markdown)$/i.test(p)) {
+    if (isOpenablePath(p)) {
       await tabs.openFile(p)
-    } else if (!/\.\w+$/.test(p)) {
+      continue
+    }
+    // 不按扩展名猜目录（带点号的文件夹如 my.notes 也要能打开）：直接探测
+    try {
+      await ipc().scanDir(p)
       await workspace.openFolder(p)
+    } catch {
+      // 既非可打开文件也非目录，忽略
     }
   }
 }
@@ -49,6 +58,8 @@ onMounted(async () => {
   ui.applyLineWidth()
   preheatRenderers()
   if (ctxMenu.value) registerMenu(ctxMenu.value)
+  // 第三方插件：扫描目录并加载已启用项（FR 见 PLUGINS.md）
+  void plugins.init()
 
   if (isTauri) {
     // 拖拽文件/文件夹入窗（FR-24）
@@ -74,7 +85,7 @@ onMounted(async () => {
   if (session) await tabs.restoreSession(session)
 
   // 「打开方式」启动参数（Windows/Linux）
-  const argsFiles = (await ipc().initialFiles()).filter((p) => /\.(md|markdown)$/i.test(p))
+  const argsFiles = (await ipc().initialFiles()).filter((p) => isOpenablePath(p))
   if (argsFiles.length) await openIncoming(argsFiles)
 
   // 会话持久化（FR-23）：根目录/打开的标签变化后落盘

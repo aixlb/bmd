@@ -117,6 +117,61 @@ describe('AI 对话链路（M5）', () => {
     await p
   })
 
+  it('多会话并行提问：busy 按会话隔离，互不阻塞', async () => {
+    const ai = useAi()
+    // 每次 aiChat 挂起，等待测试手动派发事件
+    const pending: Array<(e: AiEvent) => void> = []
+    mock.aiChat = vi.fn(async (_req, onEvent: (e: AiEvent) => void) => {
+      await new Promise<void>((resolve) => {
+        pending.push((e) => {
+          onEvent(e)
+          if (e.type === 'done') resolve()
+        })
+      })
+    })
+
+    const s1 = ai.newSession()
+    const p1 = ai.send('问题一')
+    await new Promise((r) => setTimeout(r, 10))
+    const s2 = ai.newSession()
+    const p2 = ai.send('问题二')
+    await new Promise((r) => setTimeout(r, 10))
+
+    // 两个会话同时在等回复
+    expect(s1.busy).toBe(true)
+    expect(s2.busy).toBe(true)
+    expect(pending).toHaveLength(2)
+
+    // 后发的先完成，不影响先发的
+    pending[1]({ type: 'delta', text: '答二' })
+    pending[1]({ type: 'done' })
+    await p2
+    expect(s2.busy).toBe(false)
+    expect(s1.busy).toBe(true)
+
+    pending[0]({ type: 'delta', text: '答一' })
+    pending[0]({ type: 'done' })
+    await p1
+    expect(s1.messages[1].content).toBe('答一')
+    expect(s2.messages[1].content).toBe('答二')
+  })
+
+  it('删除进行中的会话会取消其请求', async () => {
+    const ai = useAi()
+    const cancelSpy = vi.spyOn(mock, 'aiCancel')
+    mock.aiChat = vi.fn(async (_req, onEvent: (e: AiEvent) => void) => {
+      await new Promise((r) => setTimeout(r, 50))
+      onEvent({ type: 'done' })
+    })
+    const s = ai.newSession()
+    const p = ai.send('长任务')
+    await new Promise((r) => setTimeout(r, 10))
+    ai.deleteSession(s.id)
+    expect(cancelSpy).toHaveBeenCalled()
+    expect(ai.sessions.find((x) => x.id === s.id)).toBeUndefined()
+    await p
+  })
+
   it('会话持久化过滤流式中间态', async () => {
     const ai = useAi()
     const saveSpy = vi.spyOn(mock, 'saveChats')

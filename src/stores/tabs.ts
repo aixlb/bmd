@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { isHtmlPath } from '@/lib/fileTypes'
 import { ipc, type Session } from '@/lib/ipc'
 import { editorRegistry } from '@/lib/editorRegistry'
 
@@ -6,12 +7,16 @@ export interface Tab {
   id: string
   path: string | null
   title: string
+  /** md：可编辑；html：只读预览（不创建编辑器状态，不可保存） */
+  kind: 'md' | 'html'
   dirty: boolean
   mtimeMs: number | null
   /** 磁盘被外部修改且本地有未保存改动（FR-21） */
   conflict: boolean
-  /** EditorHost 首次创建 EditorState 的初始内容，消费后置 null */
+  /** EditorHost 首次创建 EditorState 的初始内容，消费后置 null；html 标签保留（srcdoc 回退用） */
   initialDoc: string | null
+  /** html 预览 URL（Tauri：bmdpreview:// 协议；浏览器环境为 null，走 srcdoc） */
+  previewUrl: string | null
 }
 
 let seq = 0
@@ -38,14 +43,25 @@ export const useTabs = defineStore('tabs', {
         return existing
       }
       const { content, mtimeMs } = await ipc().readDoc(path)
+      const kind = isHtmlPath(path) ? 'html' : 'md'
+      let previewUrl: string | null = null
+      if (kind === 'html') {
+        try {
+          previewUrl = await ipc().previewHtmlUrl(path)
+        } catch {
+          previewUrl = null // 注册失败回退 srcdoc（相对资源可能缺失，但主文档可看）
+        }
+      }
       const tab: Tab = {
         id: nextId(),
         path,
         title: titleOf(path),
+        kind,
         dirty: false,
         mtimeMs,
         conflict: false,
         initialDoc: content,
+        previewUrl,
       }
       this.tabs.push(tab)
       this.activeId = tab.id
@@ -58,10 +74,12 @@ export const useTabs = defineStore('tabs', {
         id: nextId(),
         path: null,
         title: '未命名',
+        kind: 'md',
         dirty: false,
         mtimeMs: null,
         conflict: false,
         initialDoc: '',
+        previewUrl: null,
       }
       this.tabs.push(tab)
       this.activeId = tab.id
@@ -95,6 +113,7 @@ export const useTabs = defineStore('tabs', {
     async saveTab(id: string, opts: { saveAs?: boolean } = {}): Promise<boolean> {
       const tab = this.tabs.find((t) => t.id === id)
       if (!tab) return false
+      if (tab.kind === 'html') return false // 只读预览，不支持编辑/保存
       if (!tab.dirty && tab.path && !opts.saveAs) return true
 
       const doc = editorRegistry.getDoc(id) ?? tab.initialDoc
@@ -144,6 +163,25 @@ export const useTabs = defineStore('tabs', {
         this.activeId = this.tabs[Math.min(idx, this.tabs.length - 1)]?.id ?? null
       }
       return true
+    },
+
+    /** 批量关闭：逐个走 closeTab，保留脏文件确认；某个取消不影响其余 */
+    async closeTabs(ids: string[]) {
+      for (const id of ids) await this.closeTab(id)
+    },
+
+    async closeOthers(id: string) {
+      await this.closeTabs(this.tabs.filter((t) => t.id !== id).map((t) => t.id))
+    },
+
+    async closeLeft(id: string) {
+      const idx = this.tabs.findIndex((t) => t.id === id)
+      if (idx > 0) await this.closeTabs(this.tabs.slice(0, idx).map((t) => t.id))
+    },
+
+    async closeRight(id: string) {
+      const idx = this.tabs.findIndex((t) => t.id === id)
+      if (idx >= 0) await this.closeTabs(this.tabs.slice(idx + 1).map((t) => t.id))
     },
 
     /** 外部变更分发（FR-05/21）：未改动的标签静默重载，有改动的标记冲突 */

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
+import { isHtmlPath, isOpenablePath } from '@/lib/fileTypes'
 import { ipc, type Entry } from '@/lib/ipc'
 import { menu, type MenuItem } from '@/lib/menuBus'
 import { useTabs } from '@/stores/tabs'
@@ -12,6 +13,8 @@ const tabs = useTabs()
 const expanded = computed(() => !!workspace.expanded[props.entry.path])
 const children = computed(() => workspace.children[props.entry.path] ?? [])
 const activePath = computed(() => tabs.active?.path)
+/** HTML 文件：可打开为只读预览标签 */
+const isHtml = computed(() => !props.entry.isDir && isHtmlPath(props.entry.name))
 
 /** 行内重命名（双击 / F2 / 右键菜单） */
 const renaming = ref(false)
@@ -64,7 +67,7 @@ function onRenameKey(e: KeyboardEvent) {
 function onClick() {
   if (props.entry.isDir) {
     workspace.toggleDir(props.entry.path)
-  } else if (props.entry.isMd) {
+  } else if (props.entry.isMd || isHtml.value) {
     tabs.openFile(props.entry.path)
   }
 }
@@ -74,7 +77,9 @@ function onContextMenu(e: MouseEvent) {
   const m = menu()
   if (!m) return
   const entry = props.entry
-  const parentDir = entry.isDir ? entry.path : entry.path.slice(0, entry.path.lastIndexOf('/'))
+  // 兼容 Windows 反斜杠路径
+  const sep = Math.max(entry.path.lastIndexOf('/'), entry.path.lastIndexOf('\\'))
+  const parentDir = entry.isDir ? entry.path : entry.path.slice(0, Math.max(sep, 0))
   const items: MenuItem[] = [
     {
       label: '新建文件',
@@ -83,7 +88,7 @@ function onContextMenu(e: MouseEvent) {
         if (!name) return
         const p = await ipc().createEntry(parentDir, name, false)
         await workspace.refresh()
-        if (/\.(md|markdown)$/i.test(p)) await tabs.openFile(p)
+        if (isOpenablePath(p)) await tabs.openFile(p)
       },
     },
     {
@@ -129,7 +134,8 @@ function onContextMenu(e: MouseEvent) {
       :class="{
         dir: entry.isDir,
         md: entry.isMd,
-        other: !entry.isDir && !entry.isMd,
+        html: isHtml,
+        other: !entry.isDir && !entry.isMd && !isHtml,
         active: entry.path === activePath,
       }"
       :style="{ paddingLeft: `${10 + depth * 14}px` }"
@@ -152,6 +158,12 @@ function onContextMenu(e: MouseEvent) {
           <path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10" />
           <path d="M7 15v-6l2 2l2 -2v6" />
           <path d="M14 13l2 2l2 -2m-2 2v-6" />
+        </svg>
+        <svg v-else-if="isHtml" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
+          <path d="M14 2v5a1 1 0 0 0 1 1h5" />
+          <path d="m9 13-2 2 2 2" />
+          <path d="m15 13 2 2-2 2" />
         </svg>
         <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
@@ -244,6 +256,14 @@ function onContextMenu(e: MouseEvent) {
 
 .node.md .icon {
   color: var(--bmd-accent);
+}
+
+.node.html {
+  color: var(--bmd-text);
+}
+
+.node.html .icon {
+  color: color-mix(in srgb, var(--bmd-accent) 55%, var(--bmd-text-dim));
 }
 
 .name {

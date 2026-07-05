@@ -196,10 +196,11 @@ function derive(state: EditorState, entries: BlockEntry[]): DecorationSet {
         break
       case 'table':
         deco.push(
-          Decoration.replace({ widget: new TableWidget(e.payload), block: true }).range(
-            line.from,
-            lineEnd,
-          ),
+          Decoration.replace({
+            // leading = 装饰起点（行首）到源码起点的缩进偏移，写回时校正
+            widget: new TableWidget(e.payload, e.from - line.from),
+            block: true,
+          }).range(line.from, lineEnd),
         )
         break
     }
@@ -229,18 +230,33 @@ export const blockPreviewField = StateField.define<BlockState>({
         const to = tr.state.doc.lineAt(Math.min(tb, tr.state.doc.length)).to
         spans.push({ from, to })
       })
+      // 先重扫改动区，再过滤旧 entry：与改动区或新结果重叠的一律丢弃，
+      // 防止编辑使块边界外扩时旧 entry 残留造成重叠装饰
+      const found: BlockEntry[] = []
+      for (const s of spans) {
+        scanBlocks(tr.state, s.from, s.to, found)
+      }
+      // 多个 span 可能命中同一节点，按区间+类型去重
+      const seen = new Set<string>()
+      const rescanned = found.filter((e) => {
+        const key = `${e.from}:${e.to}:${e.type}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
       entries = entries
         .map((e) => {
           const from = tr.changes.mapPos(e.from, 1)
           const to = tr.changes.mapPos(e.to, -1)
           return { ...e, from, to }
         })
-        .filter((e) => e.to > e.from && !spans.some((s) => e.from <= s.to && e.to >= s.from))
-      for (const s of spans) {
-        const found: BlockEntry[] = []
-        scanBlocks(tr.state, s.from, s.to, found)
-        entries = entries.concat(found)
-      }
+        .filter(
+          (e) =>
+            e.to > e.from &&
+            !spans.some((s) => e.from <= s.to && e.to >= s.from) &&
+            !rescanned.some((n) => e.from < n.to && e.to > n.from),
+        )
+        .concat(rescanned)
       entries.sort((a, b) => a.from - b.from)
       structureChanged = true
     } else if (syntaxTree(tr.state) !== syntaxTree(tr.startState)) {

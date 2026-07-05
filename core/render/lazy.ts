@@ -39,7 +39,9 @@ export async function renderKatex(expr: string, displayMode: boolean): Promise<s
   try {
     html = katex.renderToString(expr, { displayMode, throwOnError: false, output: 'html' })
   } catch (e) {
-    html = `<span class="bmd-render-error">公式错误：${String(e)}</span>`
+    // 错误信息可能包含用户输入，转义后再进 innerHTML
+    const esc = String(e).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    html = `<span class="bmd-render-error">公式错误：${esc}</span>`
   }
   katexCache.set(key, html)
   return html
@@ -74,13 +76,14 @@ export async function renderMermaid(code: string): Promise<{ ok: boolean; conten
       fontFamily: 'var(--bmd-font-prose)',
     })
   }
+  const renderId = ++renderSeq // 局部捕获，避免并发渲染时清理错节点
   try {
-    const { svg } = await mermaid.render(`bmd-mermaid-${++renderSeq}`, code)
+    const { svg } = await mermaid.render(`bmd-mermaid-${renderId}`, code)
     mermaidCache.set(key, svg)
     return { ok: true, content: svg }
   } catch (e) {
     // mermaid 渲染失败会在 DOM 残留错误占位，清理掉
-    document.querySelector(`#dbmd-mermaid-${renderSeq}`)?.remove()
+    document.querySelector(`#dbmd-mermaid-${renderId}`)?.remove()
     return { ok: false, content: String(e) }
   }
 }
@@ -89,7 +92,7 @@ export async function renderMermaid(code: string): Promise<{ ok: boolean; conten
 export function preheatRenderers() {
   const idle =
     'requestIdleCallback' in window
-      ? window.requestIdleCallback
+      ? window.requestIdleCallback.bind(window) // 不绑定 this 直接调用会抛 Illegal invocation
       : (fn: () => void) => setTimeout(fn, 1500)
   idle(() => {
     void loadKatex()

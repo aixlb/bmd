@@ -5,16 +5,37 @@ import type { Command, KeyBinding } from '@codemirror/view'
 
 function toggleInline(marker: string): Command {
   const len = marker.length
+  const ch = marker[0]
+  /** 恰为 2 个 * 的连跑属于加粗定界符，不能当作斜体去包裹（*** 同时含二者，可拆） */
+  const isForeignStarPair = (run: number) => ch === '*' && len === 1 && run === 2
   return (view) => {
     const spec = view.state.changeByRange((range) => {
       const { from, to } = range
       const doc = view.state.doc
       const text = doc.sliceString(from, to)
-      const before = doc.sliceString(Math.max(0, from - len), from)
-      const after = doc.sliceString(to, Math.min(doc.length, to + len))
 
-      // 已被包裹（选区含定界符）→ 去掉
-      if (text.length >= 2 * len && text.startsWith(marker) && text.endsWith(marker)) {
+      // 选区内侧定界符连跑长度
+      let innerLead = 0
+      while (innerLead < 3 && innerLead < text.length && text[innerLead] === ch) innerLead++
+      let innerTail = 0
+      while (innerTail < 3 && innerTail < text.length && text[text.length - 1 - innerTail] === ch)
+        innerTail++
+      // 选区外侧定界符连跑长度
+      let runBefore = 0
+      while (runBefore < 3 && from - runBefore - 1 >= 0 && doc.sliceString(from - runBefore - 1, from - runBefore) === ch)
+        runBefore++
+      let runAfter = 0
+      while (runAfter < 3 && to + runAfter < doc.length && doc.sliceString(to + runAfter, to + runAfter + 1) === ch)
+        runAfter++
+
+      // 已被包裹（选区含定界符）→ 去掉；但选区是 **bold** 而按斜体时应嵌套而非剥离
+      if (
+        text.length >= 2 * len &&
+        text.startsWith(marker) &&
+        text.endsWith(marker) &&
+        !isForeignStarPair(innerLead) &&
+        !isForeignStarPair(innerTail)
+      ) {
         return {
           changes: [
             { from, to: from + len, insert: '' },
@@ -23,8 +44,13 @@ function toggleInline(marker: string): Command {
           range: EditorSelection.range(from, to - 2 * len),
         }
       }
-      // 已被包裹（定界符在选区外侧）→ 去掉
-      if (before === marker && after === marker) {
+      // 已被包裹（定界符在选区外侧）→ 去掉；** 外侧按斜体时同理走包裹分支
+      if (
+        runBefore >= len &&
+        runAfter >= len &&
+        !isForeignStarPair(runBefore) &&
+        !isForeignStarPair(runAfter)
+      ) {
         return {
           changes: [
             { from: from - len, to: from, insert: '' },

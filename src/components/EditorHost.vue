@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { EditorState } from '@codemirror/state'
 import { EditorView, type ViewUpdate } from '@codemirror/view'
 import { createBmdState, getOutline } from '@core/index'
@@ -118,6 +118,9 @@ function buildState(tabId: string, doc: string, tabPath: string | null): EditorS
   })
 }
 
+/** 活动标签为 HTML：只读 iframe 预览，不进编辑器（不支持编辑） */
+const htmlTab = computed(() => (tabs.active?.kind === 'html' ? tabs.active : null))
+
 function syncActive() {
   if (!view) return
   // 收起上一个标签的状态；若有未存内容立即落盘（FR-19）
@@ -127,10 +130,11 @@ function syncActive() {
     if (prev?.dirty && prev.path) void tabs.saveTab(currentTabId)
   }
   const tab = tabs.active
-  if (!tab) {
+  if (!tab || tab.kind === 'html') {
     currentTabId = null
     view.setState(EditorState.create({ doc: '' }))
     ui.outline = []
+    if (tab) ui.counts = countWords('')
     return
   }
   let state = editorRegistry.get(tab.id)
@@ -176,7 +180,17 @@ onBeforeUnmount(() => {
         <button @click="tabs.reloadFromDisk(tabs.active!.id)">加载磁盘版本</button>
       </div>
     </Transition>
-    <div v-show="tabs.active" ref="host" class="editor-host" />
+    <div v-if="htmlTab" class="html-preview">
+      <span class="preview-badge">HTML 预览 · 只读</span>
+      <!-- key 含 mtime：外部修改文件后重建 iframe，协议端现读磁盘即拿到新内容 -->
+      <iframe
+        :key="`${htmlTab.id}:${htmlTab.mtimeMs ?? 0}`"
+        class="preview-frame"
+        sandbox="allow-scripts"
+        v-bind="htmlTab.previewUrl ? { src: htmlTab.previewUrl } : { srcdoc: htmlTab.initialDoc ?? '' }"
+      />
+    </div>
+    <div v-show="tabs.active && !htmlTab" ref="host" class="editor-host" />
     <div v-if="!tabs.active" class="placeholder">
       <img class="mark-img" src="@/assets/editor-empty.png" alt="" draggable="false" />
       <p>打开文件（{{ keyHint('⌘O') }}）或新建（{{ keyHint('⌘N') }}）开始写作</p>
@@ -239,6 +253,35 @@ onBeforeUnmount(() => {
 
 .editor-host {
   height: 100%;
+}
+
+.html-preview {
+  position: relative;
+  height: 100%;
+}
+
+.preview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #fff; /* 网页默认白底，与主题无关 */
+  border: none;
+}
+
+.preview-badge {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 10;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  color: var(--bmd-text-dim);
+  background: var(--bmd-panel);
+  border: 1px solid var(--bmd-border);
+  border-radius: 999px;
+  opacity: 0.9;
+  pointer-events: none;
+  user-select: none;
 }
 
 .editor-host :deep(.cm-editor) {

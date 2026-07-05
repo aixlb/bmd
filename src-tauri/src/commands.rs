@@ -195,7 +195,8 @@ pub async fn write_doc_atomic(
         }
     }
     crate::watcher::register_self_write(&p);
-    let tmp = p.with_extension("bmd.tmp");
+    // 追加而非替换扩展名：a.md 与 a.markdown 并发保存不共用同一临时文件
+    let tmp = crate::watcher::tmp_path_for(&p);
     {
         use std::io::Write;
         let mut f = fs::File::create(&tmp).map_err(err)?;
@@ -254,9 +255,19 @@ pub async fn save_pasted_image(
     ))
 }
 
+/// 文件/文件夹名合法性：拦截路径分隔符、盘符相对路径（C:x）与 . / ..
+fn valid_entry_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains(':')
+        && name != "."
+        && name != ".."
+}
+
 #[tauri::command]
 pub async fn create_entry(parent: String, name: String, is_dir: bool) -> Result<String, String> {
-    if name.is_empty() || name.contains('/') || name.contains('\\') {
+    if !valid_entry_name(&name) {
         return Err(format!("非法名称: {name}"));
     }
     let target = require_abs(&parent)?.join(&name);
@@ -273,7 +284,7 @@ pub async fn create_entry(parent: String, name: String, is_dir: bool) -> Result<
 
 #[tauri::command]
 pub async fn rename_entry(path: String, new_name: String) -> Result<String, String> {
-    if new_name.is_empty() || new_name.contains('/') || new_name.contains('\\') {
+    if !valid_entry_name(&new_name) {
         return Err(format!("非法名称: {new_name}"));
     }
     let p = require_abs(&path)?;

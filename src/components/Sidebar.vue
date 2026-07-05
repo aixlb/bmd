@@ -67,9 +67,11 @@ function startResize(e: PointerEvent) {
     resizing.value = false
     window.removeEventListener('pointermove', move)
     window.removeEventListener('pointerup', up)
+    window.removeEventListener('pointercancel', up)
   }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', up)
+  window.addEventListener('pointercancel', up) // 触摸中断等场景也要撤监听
   e.preventDefault()
 }
 </script>

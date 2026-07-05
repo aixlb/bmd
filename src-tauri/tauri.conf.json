@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "bmd",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "identifier": "com.aixlb.bmd",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -26,15 +26,21 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http: https: data:; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http: https: data:; font-src 'self' data:; frame-src 'self' bmdpreview: http://bmdpreview.localhost"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "nsis"],
+    "targets": [
+      "dmg",
+      "nsis"
+    ],
     "fileAssociations": [
       {
-        "ext": ["md", "markdown"],
+        "ext": [
+          "md",
+          "markdown"
+        ],
         "name": "Markdown",
         "description": "Markdown 文档",
         "role": "Editor"

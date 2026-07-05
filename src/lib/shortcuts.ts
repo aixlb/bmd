@@ -1,9 +1,11 @@
-// 应用级快捷键（REQUIREMENTS.md §3.8；编辑类快捷键在内核 keymap 中）
+// 应用级快捷键（REQUIREMENTS.md §3.8；编辑类快捷键在内核 keymap 中）。
+// 插件命令热键经 usePlugins().handleKey 优先分发。
 import { onBeforeUnmount, onMounted } from 'vue'
 import { toggleSourceMode } from '@core/index'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { ipc } from '@/lib/ipc'
 import { useAi } from '@/stores/ai'
+import { usePlugins } from '@/stores/plugins'
 import { useTabs } from '@/stores/tabs'
 import { useUi } from '@/stores/ui'
 import { useWorkspace } from '@/stores/workspace'
@@ -22,6 +24,7 @@ export function keyHint(macHint: string): string {
 
 export function useShortcuts() {
   const ai = useAi()
+  const plugins = usePlugins()
   const tabs = useTabs()
   const ui = useUi()
   const workspace = useWorkspace()
@@ -36,6 +39,8 @@ export function useShortcuts() {
       tabs.cycle(e.shiftKey ? -1 : 1)
       return
     }
+    // 插件命令热键（app.addCommand 的 hotkey）
+    if (plugins.handleKey(e)) return
     if (!mod) return
 
     if (key >= '1' && key <= '9' && !e.shiftKey && !e.altKey) {

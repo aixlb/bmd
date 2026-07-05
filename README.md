@@ -16,7 +16,7 @@ Tauri 2 · Rust · Vue 3 + TypeScript + Vite · CodeMirror 6 / Lezer（自研 li
 
 ## 下载与文档
 
-- **[GitHub Releases](https://github.com/aixlb/bmd/releases)**——Windows NSIS 安装包 / macOS dmg（Apple Silicon + Intel）
+- **[GitHub Releases](https://github.com/aixlb/bmd/releases)**——Windows NSIS 安装包与绿色便携版 zip / macOS dmg（Apple Silicon + Intel）
 - **[用户手册](MANUAL.md)**——安装、编辑、工作区、导出、AI 配置与快捷键总表
 - **[更新日志](CHANGELOG.md)**——版本变更与升级说明
 

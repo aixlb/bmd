@@ -20,22 +20,7 @@ Tauri 2 · Rust · Vue 3 + TypeScript + Vite · CodeMirror 6 / Lezer（自研 li
 - **[用户手册](MANUAL.md)**——安装、编辑、工作区、导出、AI 配置与快捷键总表
 - **[更新日志](CHANGELOG.md)**——版本变更与升级说明
 
-## 状态
-
-🎉 **v1.0.0**（2026-07-04）：首个正式版。
-
-✅ M0–M6 全部里程碑：自研内核（reveal-on-cursor / IME 安全 / 视口虚拟化）、
-全部语法渲染（GFM/KaTeX/Mermaid/表格就地编辑）、文件树/大纲/多标签/自动保存/会话恢复、
-查找替换/Slash/浮动工具条/图片粘贴/外部变更监听、导出 HTML/PDF、AI 助手（双协议多模型 + 工作区 RAG）。
-
-✅ PDF V2 原生静默导出：一键出分页 PDF，无打印对话框——macOS 走 WKWebView 打印管线
-（需 macOS 11+），Windows 走 WebView2 `PrintToPdf`；相对路径图片正确嵌入；原生路径不可用时
-自动回退系统打印对话框。
-
-✅ v1.0.0 收尾：工作区全文搜索、Windows 无边框自绘窗控、启动粒子动画、
-全新应用图标与空状态插画、MiniMax 预设、暗色下拉弹层修复。
-
-**自动化测试**：79 项前端（vitest）+ 28 项 Rust（cargo test）全绿；入口 273KB gzip；dmg 6.3MB。
+## 开发
 
 ```bash
 npm install && npm run tauri dev    # 开发

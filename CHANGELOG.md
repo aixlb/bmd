@@ -6,6 +6,11 @@
 
 - **HTML 只读预览**：`.html/.htm` 文件可经文件树点击、拖拽入窗、`⌘O` 或系统「打开方式」打开为预览标签——经 `bmdpreview://` 自定义协议在 iframe 中渲染（相对路径的图片/CSS/JS 均可加载，外部修改自动刷新），仅预览、不支持编辑与保存
 
+### 修复
+
+- 生产包里启动粒子动画从未播放：splash logo 经 `blob:` URL 装载被 CSP `img-src` 拦截后走静默跳过兜底（v1.0.0 起存在；改用 `data:` URL 装载）
+- 启动时控制台一条 `ipc.localhost` 被 CSP 拦截的报错：`connect-src` 未显式声明、回落 `default-src 'self'` 误拦 Tauri IPC 探测（窗控功能不受影响，纯噪音；现显式放行）
+
 ## v1.0.1 · 2026-07-05
 
 ### 新增

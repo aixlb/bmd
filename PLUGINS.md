@@ -327,7 +327,7 @@ app.saveData(data: unknown): void
 
 **两个插件热键冲突怎么办？** 按注册顺序（= 启用顺序）先到先得，后注册的不触发。请在文档里注明你的默认热键，便于用户排查。
 
-**插件能发网络请求吗？** 可以用 `fetch`，受应用 CSP 约束（`connect-src` 未额外限制）。
+**插件能发网络请求吗？** `fetch` 受应用 CSP 约束：`connect-src 'self' ipc: http://ipc.localhost`，只能请求应用自身与 Tauri IPC 端点，**不能直接访问外部网络**（此约束自 v1.0.0 起实际存在，早期文档「未额外限制」为勘误前的错误表述）。
 
 ---
 
@@ -335,6 +335,10 @@ app.saveData(data: unknown): void
 
 > 新条目追加在最上方。格式：`### vX（bmd 版本 · 日期）` + 变更列表（新增/变更/废弃/破坏性）。
 > 兼容性承诺：同一大版本内只增不改；破坏性调整升大版本并附迁移说明。
+
+### v1.2（bmd 未发布 · 2026-07-06）
+
+- **变更（运行环境，API 面无变化）**：应用 CSP 显式声明 `connect-src 'self' ipc: http://ipc.localhost`（此前未声明，回落到 `default-src 'self'` 并误拦 Tauri IPC 探测）。插件可见行为不变：`fetch` 过去与现在都限同源，外部网络请求均被拦截。同时勘误 FAQ 中「`connect-src` 未额外限制」的错误表述。
 
 ### v1.1（bmd 1.0.1 · 2026-07-05）
 

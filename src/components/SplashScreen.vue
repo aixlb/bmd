@@ -51,13 +51,10 @@ onMounted(async () => {
   try {
     img = await new Promise<HTMLImageElement>((resolve, reject) => {
       const image = new Image()
-      const url = URL.createObjectURL(new Blob([logoRaw], { type: 'image/svg+xml' }))
-      image.onload = () => {
-        URL.revokeObjectURL(url)
-        resolve(image)
-      }
+      image.onload = () => resolve(image)
       image.onerror = reject
-      image.src = url
+      // 用 data: 而非 blob:——生产 CSP 的 img-src 只放行 data:，blob: 会被拦截导致动画被静默跳过
+      image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(logoRaw)}`
     })
   } catch {
     return finish()

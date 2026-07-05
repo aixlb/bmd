@@ -25,7 +25,7 @@ import { isMac } from '@/lib/shortcuts'
 import { useTabs } from '@/stores/tabs'
 import { useUi } from '@/stores/ui'
 
-export const APP_VERSION = '1.0.1'
+export const APP_VERSION = '1.0.2'
 
 export interface InstalledPlugin {
   manifest: PluginManifest

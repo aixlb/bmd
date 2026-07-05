@@ -1,6 +1,6 @@
 [package]
 name = "bmd"
-version = "1.0.1"
+version = "1.0.2"
 description = "bmd (Bao Markdown) — WYSIWYG markdown editor"
 authors = ["aixlb"]
 edition = "2021"

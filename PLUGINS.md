@@ -336,7 +336,7 @@ app.saveData(data: unknown): void
 > 新条目追加在最上方。格式：`### vX（bmd 版本 · 日期）` + 变更列表（新增/变更/废弃/破坏性）。
 > 兼容性承诺：同一大版本内只增不改；破坏性调整升大版本并附迁移说明。
 
-### v1.2（bmd 未发布 · 2026-07-06）
+### v1.2（bmd 1.0.2 · 2026-07-06）
 
 - **变更（运行环境，API 面无变化）**：应用 CSP 显式声明 `connect-src 'self' ipc: http://ipc.localhost`（此前未声明，回落到 `default-src 'self'` 并误拦 Tauri IPC 探测）。插件可见行为不变：`fetch` 过去与现在都限同源，外部网络请求均被拦截。同时勘误 FAQ 中「`connect-src` 未额外限制」的错误表述。
 

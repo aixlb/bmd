@@ -1,10 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { EditorState, EditorSelection } from '@codemirror/state'
-import { createMockIpc, setIpc, type AiEvent, type Ipc } from '../src/lib/ipc'
+import {
+  createMockIpc,
+  setIpc,
+  type AiChatRequest,
+  type AiEvent,
+  type Ipc,
+} from '../src/lib/ipc'
 import { editorRegistry } from '../src/lib/editorRegistry'
 import { useAi, BUILTIN_COMMANDS } from '../src/stores/ai'
 import { useTabs } from '../src/stores/tabs'
+import { useWorkspace } from '../src/stores/workspace'
 
 let mock: Ipc
 
@@ -200,6 +207,122 @@ describe('AI 对话链路（M5）', () => {
     ai.saveCustomProviders()
     ai.selectProvider('claude')
     expect(ai.activeProvider.id).toBe('claude')
+  })
+})
+
+describe('工具调用（Agent 循环，P1）', () => {
+  it('完整循环：模型要求 read_doc → 结果回填 → 二轮作答', async () => {
+    const ai = useAi()
+    useWorkspace().root = '/ws'
+    const seen: AiChatRequest[] = []
+    mock.aiChat = vi.fn(async (req, onEvent: (e: AiEvent) => void) => {
+      seen.push(req)
+      if (seen.length === 1) {
+        onEvent({ type: 'delta', text: '我看一下。' })
+        onEvent({
+          type: 'toolCalls',
+          calls: [{ id: 't1', name: 'read_doc', arguments: '{"path":"a.md"}' }],
+        })
+        onEvent({ type: 'done' })
+      } else {
+        onEvent({ type: 'delta', text: '文档讲的是正文内容。' })
+        onEvent({ type: 'done' })
+      }
+    })
+    ai.newSession()
+    await ai.send('a.md 讲了什么？')
+
+    expect(seen[0].tools).toHaveLength(3)
+    const assistant = ai.current!.messages[1]
+    expect(assistant.content).toBe('我看一下。文档讲的是正文内容。')
+    expect(assistant.steps).toHaveLength(1)
+    expect(assistant.steps![0]).toMatchObject({ name: 'read_doc' })
+    expect(assistant.steps![0].error).toBeUndefined()
+    // 二轮请求历史：assistant 带 toolCalls，tool 结果配对 id 并含文件内容
+    const toolMsg = seen[1].messages.find((m) => m.role === 'tool')
+    expect(toolMsg?.toolCallId).toBe('t1')
+    expect(toolMsg?.content).toContain('正文内容')
+    expect(seen[1].messages.find((m) => m.toolCalls)?.toolCalls?.[0].name).toBe('read_doc')
+    expect(ai.busy).toBe(false)
+  })
+
+  it('路径逃逸：工具报错回填但循环不中断', async () => {
+    const ai = useAi()
+    useWorkspace().root = '/ws'
+    const seen: AiChatRequest[] = []
+    mock.aiChat = vi.fn(async (req, onEvent: (e: AiEvent) => void) => {
+      seen.push(req)
+      if (seen.length === 1) {
+        onEvent({
+          type: 'toolCalls',
+          calls: [{ id: 'x1', name: 'read_doc', arguments: '{"path":"../机密.md"}' }],
+        })
+        onEvent({ type: 'done' })
+      } else {
+        onEvent({ type: 'delta', text: '读不到该文件。' })
+        onEvent({ type: 'done' })
+      }
+    })
+    ai.newSession()
+    await ai.send('读一下上层目录的机密文件')
+    const assistant = ai.current!.messages[1]
+    expect(assistant.steps![0].error).toContain('越出工作区')
+    expect(seen[1].messages.find((m) => m.role === 'tool')?.content).toContain('工具执行失败')
+    expect(assistant.content).toBe('读不到该文件。')
+  })
+
+  it('未开工作区或关闭开关时不下发工具', async () => {
+    const ai = useAi()
+    let tools: unknown = 'sentinel'
+    mock.aiChat = vi.fn(async (req, onEvent: (e: AiEvent) => void) => {
+      tools = req.tools
+      onEvent({ type: 'done' })
+    })
+    ai.newSession()
+    await ai.send('无工作区')
+    expect(tools).toBeUndefined()
+
+    useWorkspace().root = '/ws'
+    ai.toolsEnabled = false
+    await ai.send('开关已关')
+    expect(tools).toBeUndefined()
+  })
+
+  it('轮数上限：8 轮后不再下发工具，强制作答', async () => {
+    const ai = useAi()
+    useWorkspace().root = '/ws'
+    let callCount = 0
+    mock.aiChat = vi.fn(async (req, onEvent: (e: AiEvent) => void) => {
+      callCount++
+      if (req.tools?.length) {
+        onEvent({
+          type: 'toolCalls',
+          calls: [{ id: `c${callCount}`, name: 'list_files', arguments: '{}' }],
+        })
+        onEvent({ type: 'done' })
+      } else {
+        onEvent({ type: 'delta', text: '基于已有信息作答。' })
+        onEvent({ type: 'done' })
+      }
+    })
+    ai.newSession()
+    await ai.send('一直查下去')
+    expect(callCount).toBe(9) // 8 轮带工具 + 1 轮强制作答
+    expect(ai.current!.messages[1].steps).toHaveLength(8)
+    expect(ai.current!.messages[1].content).toBe('基于已有信息作答。')
+  })
+
+  it('executeTool：列目录/搜索输出可读，越界与未知工具拒绝', async () => {
+    const ai = useAi()
+    useWorkspace().root = '/ws'
+    const ls = await ai.executeTool({ id: '1', name: 'list_files', arguments: '{}' })
+    expect(ls).toContain('a.md')
+    const sr = await ai.executeTool({ id: '2', name: 'search_text', arguments: '{"query":"正文"}' })
+    expect(sr).toContain('a.md')
+    await expect(
+      ai.executeTool({ id: '3', name: 'read_doc', arguments: '{"path":"../越界"}' }),
+    ).rejects.toThrow()
+    await expect(ai.executeTool({ id: '4', name: 'rm_rf', arguments: '{}' })).rejects.toThrow('未知工具')
   })
 })
 

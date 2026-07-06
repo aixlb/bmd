@@ -33,6 +33,8 @@ export interface Ipc {
   /** 工作区全文搜索：匹配文件名与 md 内容 */
   searchText(root: string, query: string, limit: number): Promise<SearchHit[]>
   readDoc(path: string): Promise<DocPayload>
+  /** AI 工具路径约束：path 规范化后必须在 root 内，否则 reject（防 ../ 与符号链接逃逸） */
+  canonInRoot(root: string, path: string): Promise<string>
   /** 返回新 mtime；期望 mtime 不匹配时 reject('conflict') */
   writeDocAtomic(path: string, content: string, expectedMtimeMs: number | null): Promise<number>
   createEntry(parent: string, name: string, isDir: boolean): Promise<string>
@@ -102,15 +104,40 @@ export interface AiProvider {
   preset?: boolean
 }
 
+/** 工具定义（parameters 为 JSON Schema） */
+export interface AiToolDef {
+  name: string
+  description: string
+  parameters: unknown
+}
+
+/** 模型发起的一次工具调用（arguments 为 JSON 字符串原文） */
+export interface AiToolCall {
+  id: string
+  name: string
+  arguments: string
+}
+
+/** 线上消息：user/assistant 文本，assistant 可带 toolCalls，role=tool 为工具结果 */
+export interface ChatWireMsg {
+  role: string
+  content: string
+  toolCalls?: AiToolCall[]
+  toolCallId?: string
+}
+
 export interface AiChatRequest {
   requestId: string
   provider: AiProvider
   system: string | null
-  messages: { role: string; content: string }[]
+  messages: ChatWireMsg[]
+  /** 只读工具集（Agent 循环）；不传 = 纯对话 */
+  tools?: AiToolDef[] | null
 }
 
 export type AiEvent =
   | { type: 'delta'; text: string }
+  | { type: 'toolCalls'; calls: AiToolCall[] }
   | { type: 'done' }
   | { type: 'error'; message: string }
 
@@ -184,9 +211,11 @@ function tauriIpc(): Ipc {
         provider: req.provider,
         system: req.system,
         messages: req.messages,
+        tools: req.tools ?? null,
         onEvent: channel,
       })
     },
+    canonInRoot: (root, path) => inv('canon_in_root', { root, path }),
     aiCancel: (requestId) => inv('ai_cancel', { requestId }),
     loadChats: (workspace) => inv('load_chats', { workspace }),
     saveChats: (workspace, json) => inv('save_chats', { workspace, json }),
@@ -337,6 +366,24 @@ graph LR
       const f = files.get(path)
       if (!f) throw new Error(`not found: ${path}`)
       return { content: f.content, mtimeMs: f.mtime }
+    },
+    async canonInRoot(root, path) {
+      // 浏览器 mock：词法归一（真实实现在 Rust 侧 canonicalize）
+      const norm = (p: string) => {
+        const parts: string[] = []
+        for (const seg of p.replace(/\\/g, '/').split('/')) {
+          if (!seg || seg === '.') continue
+          if (seg === '..') {
+            if (!parts.length) throw new Error('路径越出工作区，已拒绝')
+            parts.pop()
+          } else parts.push(seg)
+        }
+        return '/' + parts.join('/')
+      }
+      const abs = path.startsWith('/') || /^[a-zA-Z]:/.test(path) ? norm(path) : norm(`${root}/${path}`)
+      const rootN = norm(root)
+      if (abs !== rootN && !abs.startsWith(`${rootN}/`)) throw new Error('路径越出工作区，已拒绝')
+      return abs
     },
     async writeDocAtomic(path, content, expectedMtimeMs) {
       const f = files.get(path)

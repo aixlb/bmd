@@ -195,6 +195,16 @@ function openLink(url: string) {
                 />
               </label>
 
+              <label class="row">
+                <span>工具调用（Agent）<em>允许 AI 自主查阅工作区：列目录 / 读文档 / 全文搜索（只读）</em></span>
+                <input
+                  type="checkbox"
+                  class="switch"
+                  :checked="ai.toolsEnabled"
+                  @change="ai.toggleTools()"
+                />
+              </label>
+
               <h3>配置入口</h3>
               <div class="actions">
                 <button class="act" @click="ai.providerModalVisible = true">模型与密钥…</button>

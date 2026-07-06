@@ -1,5 +1,13 @@
 import { defineStore } from 'pinia'
-import { ipc, type AiProvider, type EmbedConfig, type RagHit } from '@/lib/ipc'
+import {
+  ipc,
+  type AiProvider,
+  type AiToolCall,
+  type AiToolDef,
+  type ChatWireMsg,
+  type EmbedConfig,
+  type RagHit,
+} from '@/lib/ipc'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { useTabs } from '@/stores/tabs'
 import { useWorkspace } from '@/stores/workspace'
@@ -17,11 +25,24 @@ export const PRESET_PROVIDERS: AiProvider[] = [
   { id: 'ollama', name: 'Ollama 本地', protocol: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5', preset: true },
 ]
 
+/** 一次工具调用的可视轨迹（随消息持久化；旧存档无此字段照常加载） */
+export interface ToolStep {
+  name: string
+  /** 调用参数 JSON 原文 */
+  args: string
+  /** 结果摘要（截断展示用） */
+  summary: string
+  ms: number
+  error?: string
+}
+
 export interface ChatMsg {
   role: 'user' | 'assistant'
   content: string
   streaming?: boolean
   error?: string
+  /** 本条回复产生过的工具调用轨迹 */
+  steps?: ToolStep[]
 }
 
 export interface ChatSession {
@@ -53,6 +74,47 @@ export const BUILTIN_COMMANDS: QuickCommand[] = [
 ]
 
 const CONTEXT_CHAR_BUDGET = 24_000
+/** 单个工具结果喂回模型的上限（字符） */
+const TOOL_RESULT_BUDGET = 32_000
+/** read_doc 单段返回长度（字符），超长带续读提示 */
+const TOOL_READ_CHUNK = 32_000
+/** 单次提问的最大工具轮数，超限后不再下发工具、强制作答 */
+const MAX_TOOL_ROUNDS = 8
+
+/** 只读三件套（docs/AI-TOOLS-DESIGN.md P1）：全部映射到现有 Rust 命令 */
+export const TOOL_DEFS: AiToolDef[] = [
+  {
+    name: 'list_files',
+    description:
+      '列出工作区内某个目录下的文件与子目录。dir 传相对工作区根的路径，省略或传空表示根目录。',
+    parameters: {
+      type: 'object',
+      properties: { dir: { type: 'string', description: '相对工作区根的目录路径，省略=根目录' } },
+    },
+  },
+  {
+    name: 'read_doc',
+    description:
+      '读取工作区内一个文本文件的内容。超长文件分段返回并附续读提示，可再次调用并传 offset 继续读。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '相对工作区根的文件路径' },
+        offset: { type: 'number', description: '起始字符偏移，续读时使用' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'search_text',
+    description: '在工作区全部文档中按关键词搜索（匹配文件名与内容），返回命中文件、行号与命中次数。',
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string', description: '搜索关键词' } },
+      required: ['query'],
+    },
+  },
+]
 
 function loadCustomProviders(): AiProvider[] {
   try {
@@ -95,6 +157,8 @@ export const useAi = defineStore('ai', {
     embed: JSON.parse(localStorage.getItem('bmd.ai.embed') ?? 'null') as EmbedConfig | null,
     ragIndexing: false,
     ragIndexed: false,
+    /** 工具调用（Agent）：默认开，设置里可关（bmd.ai.tools=off） */
+    toolsEnabled: localStorage.getItem('bmd.ai.tools') !== 'off',
   }),
 
   getters: {
@@ -220,6 +284,11 @@ export const useAi = defineStore('ai', {
       if (this.ragEnabled) await this.ensureIndex()
     },
 
+    toggleTools() {
+      this.toolsEnabled = !this.toolsEnabled
+      localStorage.setItem('bmd.ai.tools', this.toolsEnabled ? 'on' : 'off')
+    },
+
     setEmbed(cfg: EmbedConfig | null) {
       this.embed = cfg
       localStorage.setItem('bmd.ai.embed', JSON.stringify(cfg))
@@ -241,11 +310,16 @@ export const useAi = defineStore('ai', {
     },
 
     /** 组装 system 上下文（DESIGN §13.3 预算与优先级：选区 > 文档 > @文件 > RAG） */
-    async buildSystem(query = '', session?: ChatSession): Promise<string | null> {
+    async buildSystem(query = '', session?: ChatSession, toolsActive = false): Promise<string | null> {
       const tabs = useTabs()
       const parts: string[] = [
         '你是 bmd Markdown 编辑器内置的写作助手。回答使用中文（除非用户要求其他语言）。涉及改写/续写时输出合法的 markdown 正文，不要用代码块包裹整体答案。',
       ]
+      if (toolsActive) {
+        parts.push(
+          '你可以调用工具查阅当前工作区：list_files 列目录、read_doc 读文件、search_text 全文搜索。当问题涉及工作区内容时，先用工具获取事实依据再回答，并在答案中注明依据的文件；不要凭空猜测文件内容。',
+        )
+      }
       let budget = CONTEXT_CHAR_BUDGET
 
       const view = editorRegistry.getActiveView()
@@ -299,6 +373,51 @@ export const useAi = defineStore('ai', {
       return parts.join('\n\n')
     },
 
+    /** 执行一次模型发起的工具调用；路径一律经 canonInRoot 约束在工作区内 */
+    async executeTool(call: AiToolCall): Promise<string> {
+      const ws = useWorkspace()
+      if (!ws.root) throw new Error('未打开工作区')
+      let args: Record<string, unknown> = {}
+      try {
+        args = JSON.parse(call.arguments || '{}')
+      } catch {
+        // 参数不是合法 JSON：按空参数处理，让具体工具报缺参错误
+      }
+      const api = ipc()
+      if (call.name === 'list_files') {
+        const dir = typeof args.dir === 'string' && args.dir ? args.dir : '.'
+        const target = await api.canonInRoot(ws.root, dir)
+        const entries = await api.scanDir(target)
+        if (!entries.length) return '（空目录）'
+        return entries
+          .slice(0, 200)
+          .map((e) => `${e.isDir ? '[目录]' : '[文件]'} ${e.name}`)
+          .join('\n')
+      }
+      if (call.name === 'read_doc') {
+        if (typeof args.path !== 'string' || !args.path) throw new Error('缺少 path 参数')
+        const p = await api.canonInRoot(ws.root, args.path)
+        const { content } = await api.readDoc(p)
+        const offset =
+          typeof args.offset === 'number' && args.offset > 0
+            ? Math.min(Math.floor(args.offset), content.length)
+            : 0
+        const slice = content.slice(offset, offset + TOOL_READ_CHUNK)
+        const end = offset + slice.length
+        const more = end < content.length ? `；未完，可传 offset=${end} 续读` : ''
+        return `《${args.path}》共 ${content.length} 字符，本段 [${offset}, ${end})${more}\n---\n${slice}`
+      }
+      if (call.name === 'search_text') {
+        if (typeof args.query !== 'string' || !args.query.trim()) throw new Error('缺少 query 参数')
+        const hits = await api.searchText(ws.root, args.query, 20)
+        if (!hits.length) return '（无匹配）'
+        return hits
+          .map((h) => `${h.path}${h.line > 0 ? ` 第${h.line}行` : ''}（命中 ${h.count} 处）`)
+          .join('\n')
+      }
+      throw new Error(`未知工具：${call.name}`)
+    },
+
     async send(text: string) {
       if (!text.trim()) return
       const session = this.current ?? this.newSession()
@@ -312,35 +431,89 @@ export const useAi = defineStore('ai', {
       const assistant = session.messages[session.messages.length - 1]
 
       session.busy = true
-      const requestId = nextId('req')
+      let requestId = nextId('req')
       session.requestId = requestId
-      const system = await this.buildSystem(text, session)
-      // 历史裁剪：最近 12 条
-      const history = session.messages
+
+      const ws = useWorkspace()
+      let useTools = this.toolsEnabled && !!ws.root
+      const system = await this.buildSystem(text, session, useTools)
+      // 历史裁剪：最近 12 条（工具轨迹不进历史，只保留最终问答文本）
+      const wire: ChatWireMsg[] = session.messages
         .filter((m) => !m.streaming && !m.error)
         .slice(-12)
         .map((m) => ({ role: m.role, content: m.content }))
 
       try {
-        await ipc().aiChat(
-          {
-            requestId,
-            provider: { ...this.activeProvider },
-            system,
-            messages: history,
-          },
-          (e) => {
-            // 用户已「停止」后迟到的增量直接丢弃
-            if (e.type === 'delta') {
-              if (assistant.streaming) assistant.content += e.text
-            } else if (e.type === 'error') {
-              assistant.error = e.message
-              assistant.streaming = false
-            } else if (e.type === 'done') {
-              assistant.streaming = false
+        // Agent 循环（docs/AI-TOOLS-DESIGN.md §2/§5）：
+        // 模型要工具 → 执行 → 结果回填 → 下一轮；直到直接作答或达轮数上限
+        for (let round = 0; ; round++) {
+          let roundText = ''
+          let calls: AiToolCall[] | null = null
+          let errorMsg: string | null = null
+          const sendTools = useTools && round < MAX_TOOL_ROUNDS ? TOOL_DEFS : undefined
+          await ipc().aiChat(
+            {
+              requestId,
+              provider: { ...this.activeProvider },
+              system,
+              messages: wire,
+              tools: sendTools,
+            },
+            (e) => {
+              // 用户已「停止」后迟到的增量直接丢弃
+              if (e.type === 'delta') {
+                if (assistant.streaming) {
+                  assistant.content += e.text
+                  roundText += e.text
+                }
+              } else if (e.type === 'toolCalls') {
+                if (assistant.streaming) calls = e.calls
+              } else if (e.type === 'error') {
+                errorMsg = e.message
+              }
+            },
+          )
+          if (!assistant.streaming) break // 已被停止
+          if (errorMsg) {
+            // 端点不认 tools 参数：首轮降级为纯对话重试一次
+            if (sendTools && round === 0 && /tool|function/i.test(errorMsg)) {
+              useTools = false
+              requestId = nextId('req')
+              session.requestId = requestId
+              console.warn('[bmd] 模型不支持工具调用，本次已降级为纯对话：', errorMsg)
+              continue
             }
-          },
-        )
+            assistant.error = errorMsg
+            break
+          }
+          const pending = calls as AiToolCall[] | null
+          if (!pending || !pending.length) break // 最终回答完成
+
+          wire.push({ role: 'assistant', content: roundText, toolCalls: pending })
+          assistant.steps = assistant.steps ?? []
+          for (const call of pending) {
+            const step: ToolStep = { name: call.name, args: call.arguments, summary: '', ms: 0 }
+            assistant.steps.push(step)
+            const t0 = Date.now()
+            let output: string
+            try {
+              output = await this.executeTool(call)
+            } catch (e) {
+              output = `工具执行失败：${e instanceof Error ? e.message : e}`
+              step.error = output
+            }
+            step.ms = Date.now() - t0
+            step.summary = output.slice(0, 160)
+            wire.push({
+              role: 'tool',
+              content: output.slice(0, TOOL_RESULT_BUDGET),
+              toolCallId: call.id,
+            })
+          }
+          if (!assistant.streaming) break // 执行工具期间被停止
+          requestId = nextId('req')
+          session.requestId = requestId
+        }
       } catch (err) {
         assistant.error = String(err)
       } finally {

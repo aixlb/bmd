@@ -321,6 +321,25 @@ pub async fn reveal_in_os(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// AI 工具路径约束（DESIGN docs/AI-TOOLS-DESIGN.md §7）：path（相对工作区或绝对）
+/// 规范化后必须位于 root 之内。canonicalize 同时消解 `..` 与符号链接，防两类逃逸。
+pub fn canon_in_root_impl(root: &str, path: &str) -> Result<String, String> {
+    let root_c = std::fs::canonicalize(root).map_err(err)?;
+    let joined = Path::new(root).join(path);
+    let canon = std::fs::canonicalize(&joined).map_err(|_| format!("路径不存在：{path}"))?;
+    if !canon.starts_with(&root_c) {
+        return Err("路径越出工作区，已拒绝".into());
+    }
+    // Windows canonicalize 产出 \\?\ 前缀，剥掉便于展示与复用
+    let s = canon.to_string_lossy().into_owned();
+    Ok(s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s))
+}
+
+#[tauri::command]
+pub async fn canon_in_root(root: String, path: String) -> Result<String, String> {
+    canon_in_root_impl(&root, &path)
+}
+
 fn session_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(err)?;
     fs::create_dir_all(&dir).map_err(err)?;
@@ -416,6 +435,30 @@ mod tests {
         // 空白查询返回空；limit 截断
         assert!(block(search_text(root.clone(), "  ".into(), 50)).unwrap().is_empty());
         assert_eq!(block(search_text(root, "hello".into(), 1)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn canon_in_root_guards_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub").join("a.md"), "x").unwrap();
+        fs::write(dir.path().join("top.md"), "y").unwrap();
+
+        // 相对路径正常解析
+        let ok = canon_in_root_impl(&root, "sub/a.md").unwrap();
+        assert!(ok.ends_with("a.md"));
+        // 根内绝对路径也接受
+        let abs = dir.path().join("top.md").to_string_lossy().into_owned();
+        assert!(canon_in_root_impl(&root, &abs).is_ok());
+        // ../ 逃逸拒绝
+        assert!(canon_in_root_impl(&root, "../").is_err());
+        assert!(canon_in_root_impl(&root, "sub/../../etc").is_err());
+        // 根外绝对路径拒绝
+        let outside = std::env::temp_dir().to_string_lossy().into_owned();
+        assert!(canon_in_root_impl(&root, &outside).is_err());
+        // 不存在的路径拒绝（canonicalize 失败）
+        assert!(canon_in_root_impl(&root, "nope.md").is_err());
     }
 
     #[test]

@@ -46,6 +46,7 @@ fn main() {
             commands::rename_entry,
             commands::trash_entry,
             commands::reveal_in_os,
+            commands::canon_in_root,
             commands::load_session,
             commands::save_session,
             commands::save_pasted_image,

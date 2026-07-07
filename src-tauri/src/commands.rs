@@ -321,6 +321,35 @@ pub async fn reveal_in_os(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 识图附件上限：base64 后约 +33%，8MB 原图足够覆盖常见截图/照片
+const IMAGE_ATTACH_MAX: u64 = 8 * 1024 * 1024;
+
+/// 读取图片为 base64（AI 识图附件用）。路径来自文件选择器/粘贴，扩展名白名单 + 大小上限。
+pub fn read_image_b64_impl(path: &str) -> Result<(String, String), String> {
+    use base64::Engine;
+    let p = require_abs(path)?;
+    let mime = crate::pdf::image_mime(path).ok_or("不支持的图片格式")?;
+    let meta = fs::metadata(&p).map_err(err)?;
+    if meta.len() > IMAGE_ATTACH_MAX {
+        return Err(format!("图片过大（{:.1}MB），上限 8MB", meta.len() as f64 / 1048576.0));
+    }
+    let bytes = fs::read(&p).map_err(err)?;
+    Ok((mime.to_string(), base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageB64 {
+    pub media_type: String,
+    pub data_b64: String,
+}
+
+#[tauri::command]
+pub async fn read_image_b64(path: String) -> Result<ImageB64, String> {
+    let (media_type, data_b64) = read_image_b64_impl(&path)?;
+    Ok(ImageB64 { media_type, data_b64 })
+}
+
 /// AI 工具路径约束（DESIGN docs/AI-TOOLS-DESIGN.md §7）：path（相对工作区或绝对）
 /// 规范化后必须位于 root 之内。canonicalize 同时消解 `..` 与符号链接，防两类逃逸。
 pub fn canon_in_root_impl(root: &str, path: &str) -> Result<String, String> {
@@ -435,6 +464,25 @@ mod tests {
         // 空白查询返回空；limit 截断
         assert!(block(search_text(root.clone(), "  ".into(), 50)).unwrap().is_empty());
         assert_eq!(block(search_text(root, "hello".into(), 1)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn read_image_b64_validates() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("a.png");
+        // 1x1 PNG 头部字节（内容合法性不校验，只验白名单与编码往返）
+        fs::write(&png, [0x89, b'P', b'N', b'G', 0, 1, 2, 3]).unwrap();
+        let (mime, b64) = read_image_b64_impl(&png.to_string_lossy()).unwrap();
+        assert_eq!(mime, "image/png");
+        use base64::Engine;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.decode(&b64).unwrap()[..4],
+            [0x89, b'P', b'N', b'G']
+        );
+        // 非图片扩展拒绝
+        let txt = dir.path().join("b.txt");
+        fs::write(&txt, "x").unwrap();
+        assert!(read_image_b64_impl(&txt.to_string_lossy()).is_err());
     }
 
     #[test]

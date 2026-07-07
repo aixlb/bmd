@@ -121,6 +121,9 @@ function buildState(tabId: string, doc: string, tabPath: string | null): EditorS
 /** 活动标签为 HTML：只读 iframe 预览，不进编辑器（不支持编辑） */
 const htmlTab = computed(() => (tabs.active?.kind === 'html' ? tabs.active : null))
 
+/** 活动标签为图片：只读 <img> 预览 */
+const imageTab = computed(() => (tabs.active?.kind === 'image' ? tabs.active : null))
+
 function syncActive() {
   if (!view) return
   // 收起上一个标签的状态；若有未存内容立即落盘（FR-19）
@@ -130,7 +133,7 @@ function syncActive() {
     if (prev?.dirty && prev.path) void tabs.saveTab(currentTabId)
   }
   const tab = tabs.active
-  if (!tab || tab.kind === 'html') {
+  if (!tab || tab.kind !== 'md') {
     currentTabId = null
     view.setState(EditorState.create({ doc: '' }))
     ui.outline = []
@@ -190,7 +193,19 @@ onBeforeUnmount(() => {
         v-bind="htmlTab.previewUrl ? { src: htmlTab.previewUrl } : { srcdoc: htmlTab.initialDoc ?? '' }"
       />
     </div>
-    <div v-show="tabs.active && !htmlTab" ref="host" class="editor-host" />
+    <div v-if="imageTab" class="image-preview">
+      <span class="preview-badge">图片预览 · 只读</span>
+      <!-- key 含 mtime：外部修改后重建 <img>，协议端现读磁盘即拿到新图 -->
+      <img
+        v-if="imageTab.previewUrl"
+        :key="`${imageTab.id}:${imageTab.mtimeMs ?? 0}`"
+        class="preview-img"
+        :src="imageTab.previewUrl"
+        :alt="imageTab.title"
+      />
+      <p v-else class="image-fallback">图片预览仅在桌面应用中可用</p>
+    </div>
+    <div v-show="tabs.active && !htmlTab && !imageTab" ref="host" class="editor-host" />
     <div v-if="!tabs.active" class="placeholder">
       <img class="mark-img" src="@/assets/editor-empty.png" alt="" draggable="false" />
       <p>打开文件（{{ keyHint('⌘O') }}）或新建（{{ keyHint('⌘N') }}）开始写作</p>
@@ -266,6 +281,32 @@ onBeforeUnmount(() => {
   height: 100%;
   background: #fff; /* 网页默认白底，与主题无关 */
   border: none;
+}
+
+.image-preview {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 100%;
+  overflow: auto;
+  padding: 24px;
+  /* 棋盘格底：透明图也能看清边界 */
+  background:
+    repeating-conic-gradient(color-mix(in srgb, var(--bmd-text) 5%, transparent) 0% 25%, transparent 0% 50%)
+    0 0 / 22px 22px;
+}
+
+.preview-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+}
+
+.image-fallback {
+  font-size: 12.5px;
+  color: var(--bmd-text-faint);
 }
 
 .preview-badge {

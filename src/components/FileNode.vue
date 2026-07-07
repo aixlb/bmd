@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
-import { isHtmlPath, isOpenablePath } from '@/lib/fileTypes'
+import { isHtmlPath, isImagePath, isOpenablePath } from '@/lib/fileTypes'
 import { ipc, type Entry } from '@/lib/ipc'
 import { menu, type MenuItem } from '@/lib/menuBus'
 import { useTabs } from '@/stores/tabs'
@@ -15,6 +15,8 @@ const children = computed(() => workspace.children[props.entry.path] ?? [])
 const activePath = computed(() => tabs.active?.path)
 /** HTML 文件：可打开为只读预览标签 */
 const isHtml = computed(() => !props.entry.isDir && isHtmlPath(props.entry.name))
+/** 图片文件：可打开为只读预览标签 */
+const isImage = computed(() => !props.entry.isDir && isImagePath(props.entry.name))
 
 /** 行内重命名（双击 / F2 / 右键菜单） */
 const renaming = ref(false)
@@ -67,7 +69,7 @@ function onRenameKey(e: KeyboardEvent) {
 function onClick() {
   if (props.entry.isDir) {
     workspace.toggleDir(props.entry.path)
-  } else if (props.entry.isMd || isHtml.value) {
+  } else if (props.entry.isMd || isHtml.value || isImage.value) {
     tabs.openFile(props.entry.path)
   }
 }
@@ -135,7 +137,8 @@ function onContextMenu(e: MouseEvent) {
         dir: entry.isDir,
         md: entry.isMd,
         html: isHtml,
-        other: !entry.isDir && !entry.isMd && !isHtml,
+        image: isImage,
+        other: !entry.isDir && !entry.isMd && !isHtml && !isImage,
         active: entry.path === activePath,
       }"
       :style="{ paddingLeft: `${10 + depth * 14}px` }"
@@ -164,6 +167,11 @@ function onContextMenu(e: MouseEvent) {
           <path d="M14 2v5a1 1 0 0 0 1 1h5" />
           <path d="m9 13-2 2 2 2" />
           <path d="m15 13 2 2-2 2" />
+        </svg>
+        <svg v-else-if="isImage" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+          <circle cx="9" cy="9" r="2" />
+          <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
         </svg>
         <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />

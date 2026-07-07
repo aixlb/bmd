@@ -29,10 +29,28 @@ const diff = reactive({
 
 async function send() {
   const text = input.value.trim()
-  if (!text || ai.busy) return
+  if ((!text && !ai.pendingImages.length) || ai.busy) return
   input.value = ''
   stickToBottom.value = true // 用户主动发送，跳回底部
   await ai.send(text)
+}
+
+/** 粘贴截图/图片 → 识图附件 */
+function onPaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  for (const item of items) {
+    if (!item.type.startsWith('image/')) continue
+    e.preventDefault()
+    const file = item.getAsFile()
+    if (!file) continue
+    const reader = new FileReader()
+    reader.onload = () => {
+      const m = /^data:([^;]+);base64,(.*)$/.exec(String(reader.result))
+      if (m) ai.attachImageData({ mediaType: m[1], dataB64: m[2] })
+    }
+    reader.readAsDataURL(file)
+  }
 }
 
 /** 是否吸附底部：用户往上滚后暂停自动滚底，滚回底部附近恢复 */
@@ -257,16 +275,26 @@ onUnmounted(() => {
     </div>
 
     <footer class="composer">
+      <div v-if="ai.pendingImages.length" class="attach-strip">
+        <div v-for="(img, i) in ai.pendingImages" :key="i" class="attach-thumb">
+          <img :src="`data:${img.mediaType};base64,${img.dataB64}`" alt="附图" />
+          <button class="attach-x" title="移除" @click="ai.removePendingImage(i)">×</button>
+        </div>
+      </div>
       <textarea
         v-model="input"
         rows="3"
-        placeholder="问点什么…（Enter 发送，Shift+Enter 换行）"
+        placeholder="问点什么…（Enter 发送，Shift+Enter 换行，可粘贴截图）"
         @keydown.enter.exact.prevent="send"
+        @paste="onPaste"
       />
       <div class="composer-bar">
         <span class="dim">{{ ai.activeProvider.name }}</span>
-        <button v-if="ai.busy" class="stop" @click="ai.stop()">■ 停止</button>
-        <button v-else class="send" :disabled="!input.trim()" @click="send">发送 ↵</button>
+        <div class="composer-actions">
+          <button class="img-btn" title="附加图片（需模型支持视觉；也可直接粘贴截图）" @click="ai.pickAndAttachImage()">🖼</button>
+          <button v-if="ai.busy" class="stop" @click="ai.stop()">■ 停止</button>
+          <button v-else class="send" :disabled="!input.trim() && !ai.pendingImages.length" @click="send">发送 ↵</button>
+        </div>
       </div>
     </footer>
 
@@ -586,6 +614,63 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   margin-top: 6px;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.img-btn {
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid var(--bmd-border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.img-btn:hover {
+  border-color: var(--bmd-text-faint);
+}
+
+/* ---- 识图附件条 ---- */
+.attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.attach-thumb {
+  position: relative;
+}
+
+.attach-thumb img {
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--bmd-border);
+  display: block;
+}
+
+.attach-x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.65);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
 }
 
 .send,

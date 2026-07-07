@@ -43,7 +43,18 @@ function stepTitle(name: string, args: string): string {
 <template>
   <div class="msg" :class="msg.role">
     <template v-if="msg.role === 'user'">
-      <div class="bubble user-bubble">{{ msg.content }}</div>
+      <div class="bubble user-bubble">
+        <div v-if="msg.images?.length" class="u-imgs">
+          <img
+            v-for="(img, i) in msg.images"
+            :key="i"
+            :src="`data:${img.mediaType};base64,${img.dataB64}`"
+            alt="附图"
+          />
+        </div>
+        <span v-else-if="msg.imageCount" class="u-img-note">🖼 附图 ×{{ msg.imageCount }}</span>
+        {{ msg.content }}
+      </div>
     </template>
     <template v-else>
       <img class="avatar" src="@/assets/ai-avatar.png" alt="" draggable="false" />
@@ -105,6 +116,21 @@ function stepTitle(name: string, args: string): string {
   background: var(--bmd-accent-gradient);
   white-space: pre-wrap;
   border-bottom-right-radius: 4px;
+}
+
+.u-imgs img {
+  display: block;
+  max-width: 180px;
+  max-height: 130px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+}
+
+.u-img-note {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  opacity: 0.85;
 }
 
 .ai-bubble {

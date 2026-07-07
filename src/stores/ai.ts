@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import {
   ipc,
+  type AiImage,
   type AiProvider,
   type AiToolCall,
   type AiToolDef,
@@ -43,6 +44,10 @@ export interface ChatMsg {
   error?: string
   /** 本条回复产生过的工具调用轨迹 */
   steps?: ToolStep[]
+  /** 随消息发送的图片（识图）；仅会话内展示，落盘时剥离数据只留张数 */
+  images?: AiImage[]
+  /** 落盘保留的附图张数（数据已剥离） */
+  imageCount?: number
 }
 
 export interface ChatSession {
@@ -159,6 +164,8 @@ export const useAi = defineStore('ai', {
     ragIndexed: false,
     /** 工具调用（Agent）：默认开，设置里可关（bmd.ai.tools=off） */
     toolsEnabled: localStorage.getItem('bmd.ai.tools') !== 'off',
+    /** 待发送的识图附件（随下一条消息发出后清空） */
+    pendingImages: [] as AiImage[],
   }),
 
   getters: {
@@ -248,11 +255,13 @@ export const useAi = defineStore('ai', {
     async persist(rootOverride?: string | null) {
       const ws = useWorkspace()
       const root = rootOverride === undefined ? ws.root : rootOverride
-      // 流式中间态与运行时字段不落盘
+      // 流式中间态与运行时字段不落盘；图片数据剥离（体积），只留张数标记
       const sessions = this.sessions.map((s) => ({
         id: s.id,
         title: s.title,
-        messages: s.messages.filter((m) => !m.streaming),
+        messages: s.messages
+          .filter((m) => !m.streaming)
+          .map(({ images, ...m }) => (images?.length ? { ...m, imageCount: images.length } : m)),
       }))
       await ipc().saveChats(
         root ?? '__global__',
@@ -287,6 +296,31 @@ export const useAi = defineStore('ai', {
     toggleTools() {
       this.toolsEnabled = !this.toolsEnabled
       localStorage.setItem('bmd.ai.tools', this.toolsEnabled ? 'on' : 'off')
+    },
+
+    /** 附加图片（选图对话框路径 → base64）；失败抛错由调用方提示 */
+    async attachImageFromPath(path: string) {
+      const img = await ipc().readImageB64(path)
+      this.pendingImages.push(img)
+    },
+
+    attachImageData(img: AiImage) {
+      this.pendingImages.push(img)
+    },
+
+    /** 选图对话框 → 附加（AiPanel 附图按钮） */
+    async pickAndAttachImage() {
+      const path = await ipc().pickImage()
+      if (!path) return
+      try {
+        await this.attachImageFromPath(path)
+      } catch (e) {
+        console.warn('[bmd] 附加图片失败', e)
+      }
+    },
+
+    removePendingImage(index: number) {
+      this.pendingImages.splice(index, 1)
     },
 
     setEmbed(cfg: EmbedConfig | null) {
@@ -385,18 +419,29 @@ export const useAi = defineStore('ai', {
       }
       const api = ipc()
       if (call.name === 'list_files') {
-        const dir = typeof args.dir === 'string' && args.dir ? args.dir : '.'
-        const target = await api.canonInRoot(ws.root, dir)
+        const dirArg = typeof args.dir === 'string' ? args.dir.replace(/\\/g, '/').replace(/^\.\/?|\/+$/g, '') : ''
+        const target = await api.canonInRoot(ws.root, dirArg || '.')
         const entries = await api.scanDir(target)
-        if (!entries.length) return '（空目录）'
-        return entries
-          .slice(0, 200)
-          .map((e) => `${e.isDir ? '[目录]' : '[文件]'} ${e.name}`)
-          .join('\n')
+        const label = dirArg || '（工作区根）'
+        if (!entries.length) return `目录 ${label} 为空`
+        // 条目直接给出相对工作区根的路径，可原样用于 read_doc/list_files
+        const prefix = dirArg ? `${dirArg}/` : ''
+        return (
+          `目录 ${label} 的内容（路径可直接传给 read_doc / list_files）：\n` +
+          entries
+            .slice(0, 200)
+            .map((e) => `${e.isDir ? '[目录]' : '[文件]'} ${prefix}${e.name}`)
+            .join('\n')
+        )
       }
       if (call.name === 'read_doc') {
         if (typeof args.path !== 'string' || !args.path) throw new Error('缺少 path 参数')
-        const p = await api.canonInRoot(ws.root, args.path)
+        let p: string
+        try {
+          p = await api.canonInRoot(ws.root, args.path)
+        } catch (e) {
+          throw new Error(`${e instanceof Error ? e.message : e}（提示：先用 list_files 确认确切路径）`)
+        }
         const { content } = await api.readDoc(p)
         const offset =
           typeof args.offset === 'number' && args.offset > 0
@@ -419,13 +464,16 @@ export const useAi = defineStore('ai', {
     },
 
     async send(text: string) {
-      if (!text.trim()) return
+      if (!text.trim() && !this.pendingImages.length) return
       const session = this.current ?? this.newSession()
       if (session.busy) return
       if (session.messages.length === 0) {
-        session.title = text.slice(0, 24)
+        session.title = (text.trim() || '看图').slice(0, 24)
       }
-      session.messages.push({ role: 'user', content: text })
+      // 消费待发图片（识图）；仅当前这条 user 消息携带，不进后续历史
+      const images = this.pendingImages.length ? [...this.pendingImages] : undefined
+      this.pendingImages = []
+      session.messages.push({ role: 'user', content: text, images })
       session.messages.push({ role: 'assistant', content: '', streaming: true })
       // 经响应式代理操作，流式增量才会驱动界面
       const assistant = session.messages[session.messages.length - 1]
@@ -441,7 +489,12 @@ export const useAi = defineStore('ai', {
       const wire: ChatWireMsg[] = session.messages
         .filter((m) => !m.streaming && !m.error)
         .slice(-12)
-        .map((m) => ({ role: m.role, content: m.content }))
+        .map((m, i, arr) => ({
+          role: m.role,
+          content: m.content,
+          // 只有本轮（最后一条 user）携带图片，历史消息不重发图片数据
+          ...(i === arr.length - 1 && m.images?.length ? { images: m.images } : {}),
+        }))
 
       try {
         // Agent 循环（docs/AI-TOOLS-DESIGN.md §2/§5）：

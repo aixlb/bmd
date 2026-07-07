@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { isHtmlPath } from '@/lib/fileTypes'
+import { isHtmlPath, isImagePath } from '@/lib/fileTypes'
 import { ipc, type Session } from '@/lib/ipc'
 import { editorRegistry } from '@/lib/editorRegistry'
 
@@ -7,8 +7,8 @@ export interface Tab {
   id: string
   path: string | null
   title: string
-  /** md：可编辑；html：只读预览（不创建编辑器状态，不可保存） */
-  kind: 'md' | 'html'
+  /** md：可编辑；html/image：只读预览（不创建编辑器状态，不可保存） */
+  kind: 'md' | 'html' | 'image'
   dirty: boolean
   mtimeMs: number | null
   /** 磁盘被外部修改且本地有未保存改动（FR-21） */
@@ -42,14 +42,19 @@ export const useTabs = defineStore('tabs', {
         this.activeId = existing.id
         return existing
       }
-      const { content, mtimeMs } = await ipc().readDoc(path)
-      const kind = isHtmlPath(path) ? 'html' : 'md'
+      const kind = isHtmlPath(path) ? 'html' : isImagePath(path) ? 'image' : 'md'
+      let content: string | null = null
+      let mtimeMs: number | null = null
+      if (kind !== 'image') {
+        // 图片是二进制，不走文本读取；内容由预览协议直接服务
+        ;({ content, mtimeMs } = await ipc().readDoc(path))
+      }
       let previewUrl: string | null = null
-      if (kind === 'html') {
+      if (kind !== 'md') {
         try {
           previewUrl = await ipc().previewHtmlUrl(path)
         } catch {
-          previewUrl = null // 注册失败回退 srcdoc（相对资源可能缺失，但主文档可看）
+          previewUrl = null // 注册失败：html 回退 srcdoc；图片显示占位提示
         }
       }
       const tab: Tab = {
@@ -113,7 +118,7 @@ export const useTabs = defineStore('tabs', {
     async saveTab(id: string, opts: { saveAs?: boolean } = {}): Promise<boolean> {
       const tab = this.tabs.find((t) => t.id === id)
       if (!tab) return false
-      if (tab.kind === 'html') return false // 只读预览，不支持编辑/保存
+      if (tab.kind !== 'md') return false // 只读预览（html/图片），不支持编辑/保存
       if (!tab.dirty && tab.path && !opts.saveAs) return true
 
       const doc = editorRegistry.getDoc(id) ?? tab.initialDoc
@@ -200,6 +205,11 @@ export const useTabs = defineStore('tabs', {
     async reloadFromDisk(id: string) {
       const tab = this.tabs.find((t) => t.id === id)
       if (!tab?.path) return
+      if (tab.kind === 'image') {
+        // 图片不读文本：更新 mtime 使 <img> 的 key 变化，协议端现读磁盘即新图
+        tab.mtimeMs = Date.now()
+        return
+      }
       let payload
       try {
         payload = await ipc().readDoc(tab.path)

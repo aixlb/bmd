@@ -32,6 +32,14 @@ pub struct ToolCallMsg {
     pub arguments: String,
 }
 
+/// 随消息附带的图片（识图）：base64 原文 + MIME
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAttachment {
+    pub media_type: String,
+    pub data_b64: String,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
@@ -43,6 +51,9 @@ pub struct ChatMessage {
     /// role=tool 时对应的调用 id
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// role=user 时可附带的图片（识图；需模型支持视觉输入）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<ImageAttachment>>,
 }
 
 /// 工具定义（前端下发；parameters 为 JSON Schema）
@@ -330,6 +341,19 @@ fn anthropic_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
                 }));
             }
             out.push(serde_json::json!({ "role": m.role, "content": blocks }));
+        } else if let Some(images) = m.images.as_ref().filter(|v| !v.is_empty()) {
+            // 识图：图片块在前、文本在后（Anthropic 官方推荐顺序）
+            let mut blocks: Vec<serde_json::Value> = images.iter().map(|img| {
+                serde_json::json!({
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": img.media_type, "data": img.data_b64 },
+                })
+            }).collect();
+            // Anthropic 拒绝空 text 块：纯图消息不追加文本
+            if !m.content.is_empty() {
+                blocks.push(serde_json::json!({ "type": "text", "text": m.content }));
+            }
+            out.push(serde_json::json!({ "role": m.role, "content": blocks }));
         } else {
             out.push(serde_json::json!({ "role": m.role, "content": m.content }));
         }
@@ -361,6 +385,18 @@ fn openai_messages(system: &Option<String>, messages: &[ChatMessage]) -> Vec<ser
             msgs.push(serde_json::json!({
                 "role": m.role, "content": m.content, "tool_calls": tool_calls,
             }));
+        } else if let Some(images) = m.images.as_ref().filter(|v| !v.is_empty()) {
+            // 识图：OpenAI 兼容的 image_url data URL 形态
+            let mut parts: Vec<serde_json::Value> = images.iter().map(|img| {
+                serde_json::json!({
+                    "type": "image_url",
+                    "image_url": { "url": format!("data:{};base64,{}", img.media_type, img.data_b64) },
+                })
+            }).collect();
+            if !m.content.is_empty() {
+                parts.push(serde_json::json!({ "type": "text", "text": m.content }));
+            }
+            msgs.push(serde_json::json!({ "role": m.role, "content": parts }));
         } else {
             msgs.push(serde_json::json!({ "role": m.role, "content": m.content }));
         }
@@ -799,7 +835,44 @@ mod tests {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            images: None,
         }
+    }
+
+    #[test]
+    fn request_building_with_images() {
+        let client = reqwest::Client::new();
+        let mut user = msg("user", "这张图里是什么？");
+        user.images = Some(vec![ImageAttachment {
+            media_type: "image/png".into(),
+            data_b64: "QUJD".into(),
+        }]);
+        let messages = vec![user];
+
+        let anthropic = ProviderConfig {
+            id: "a".into(), protocol: "anthropic".into(),
+            base_url: "https://api.anthropic.com".into(), model: "m".into(),
+        };
+        let req = build_request(&client, &anthropic, &None, &messages, &None, &None).build().unwrap();
+        let body: serde_json::Value = serde_json::from_slice(req.body().unwrap().as_bytes().unwrap()).unwrap();
+        // 图片块在前、文本在后
+        assert_eq!(body["messages"][0]["content"][0]["type"], "image");
+        assert_eq!(body["messages"][0]["content"][0]["source"]["media_type"], "image/png");
+        assert_eq!(body["messages"][0]["content"][0]["source"]["data"], "QUJD");
+        assert_eq!(body["messages"][0]["content"][1]["type"], "text");
+
+        let openai = ProviderConfig {
+            id: "o".into(), protocol: "openai".into(),
+            base_url: "https://api.moonshot.cn/v1".into(), model: "m".into(),
+        };
+        let req = build_request(&client, &openai, &None, &messages, &None, &None).build().unwrap();
+        let body: serde_json::Value = serde_json::from_slice(req.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["messages"][0]["content"][0]["type"], "image_url");
+        assert_eq!(
+            body["messages"][0]["content"][0]["image_url"]["url"],
+            "data:image/png;base64,QUJD"
+        );
+        assert_eq!(body["messages"][0]["content"][1]["text"], "这张图里是什么？");
     }
 
     #[test]

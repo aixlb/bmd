@@ -35,6 +35,10 @@ export interface Ipc {
   readDoc(path: string): Promise<DocPayload>
   /** AI 工具路径约束：path 规范化后必须在 root 内，否则 reject（防 ../ 与符号链接逃逸） */
   canonInRoot(root: string, path: string): Promise<string>
+  /** 读取图片为 base64（识图附件；扩展名白名单 + 8MB 上限） */
+  readImageB64(path: string): Promise<AiImage>
+  /** 选择一张图片（识图附件）；取消返回 null */
+  pickImage(): Promise<string | null>
   /** 返回新 mtime；期望 mtime 不匹配时 reject('conflict') */
   writeDocAtomic(path: string, content: string, expectedMtimeMs: number | null): Promise<number>
   createEntry(parent: string, name: string, isDir: boolean): Promise<string>
@@ -118,12 +122,19 @@ export interface AiToolCall {
   arguments: string
 }
 
-/** 线上消息：user/assistant 文本，assistant 可带 toolCalls，role=tool 为工具结果 */
+/** 识图附件：base64 与 MIME */
+export interface AiImage {
+  mediaType: string
+  dataB64: string
+}
+
+/** 线上消息：user/assistant 文本，assistant 可带 toolCalls，role=tool 为工具结果，user 可带 images */
 export interface ChatWireMsg {
   role: string
   content: string
   toolCalls?: AiToolCall[]
   toolCallId?: string
+  images?: AiImage[]
 }
 
 export interface AiChatRequest {
@@ -171,9 +182,13 @@ function tauriIpc(): Ipc {
       const r = await open({
         multiple: false,
         filters: [
-          { name: '支持的文件', extensions: ['md', 'markdown', 'html', 'htm'] },
+          {
+            name: '支持的文件',
+            extensions: ['md', 'markdown', 'html', 'htm', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico'],
+          },
           { name: 'Markdown', extensions: ['md', 'markdown'] },
           { name: 'HTML', extensions: ['html', 'htm'] },
+          { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico'] },
         ],
       })
       return typeof r === 'string' ? r : null
@@ -216,6 +231,17 @@ function tauriIpc(): Ipc {
       })
     },
     canonInRoot: (root, path) => inv('canon_in_root', { root, path }),
+    readImageB64: (path) => inv('read_image_b64', { path }),
+    pickImage: async () => {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const r = await open({
+        multiple: false,
+        filters: [
+          { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
+        ],
+      })
+      return typeof r === 'string' ? r : null
+    },
     aiCancel: (requestId) => inv('ai_cancel', { requestId }),
     loadChats: (workspace) => inv('load_chats', { workspace }),
     saveChats: (workspace, json) => inv('save_chats', { workspace, json }),
@@ -366,6 +392,17 @@ graph LR
       const f = files.get(path)
       if (!f) throw new Error(`not found: ${path}`)
       return { content: f.content, mtimeMs: f.mtime }
+    },
+    async readImageB64() {
+      // 浏览器 mock：返回 1x1 透明 PNG
+      return {
+        mediaType: 'image/png',
+        dataB64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      }
+    },
+    async pickImage() {
+      return '/demo/示例.png' // 浏览器 mock：配合 readImageB64 演示附图链路
     },
     async canonInRoot(root, path) {
       // 浏览器 mock：词法归一（真实实现在 Rust 侧 canonicalize）

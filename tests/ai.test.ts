@@ -312,6 +312,35 @@ describe('工具调用（Agent 循环，P1）', () => {
     expect(ai.current!.messages[1].content).toBe('基于已有信息作答。')
   })
 
+  it('识图附件：仅当前轮携带图片，历史不重发，落盘剥离为张数', async () => {
+    const ai = useAi()
+    const seen: AiChatRequest[] = []
+    mock.aiChat = vi.fn(async (req, onEvent: (e: AiEvent) => void) => {
+      seen.push(req)
+      onEvent({ type: 'delta', text: '图里是一只猫' })
+      onEvent({ type: 'done' })
+    })
+    ai.newSession()
+    ai.attachImageData({ mediaType: 'image/png', dataB64: 'QUJD' })
+    await ai.send('这是什么？')
+
+    const wireUser = seen[0].messages[seen[0].messages.length - 1]
+    expect(wireUser.images?.[0].dataB64).toBe('QUJD')
+    expect(ai.pendingImages).toHaveLength(0)
+    expect(ai.current!.messages[0].images).toHaveLength(1)
+
+    // 第二轮提问：历史消息不重发图片数据
+    await ai.send('继续')
+    expect(seen[1].messages.every((m) => !m.images)).toBe(true)
+
+    // 落盘：图片数据剥离，仅留张数
+    const saveSpy = vi.spyOn(mock, 'saveChats')
+    await ai.persist()
+    const savedUser = JSON.parse(saveSpy.mock.calls[0][1] as string).sessions[0].messages[0]
+    expect(savedUser.images).toBeUndefined()
+    expect(savedUser.imageCount).toBe(1)
+  })
+
   it('executeTool：列目录/搜索输出可读，越界与未知工具拒绝', async () => {
     const ai = useAi()
     useWorkspace().root = '/ws'

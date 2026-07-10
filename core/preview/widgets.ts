@@ -108,6 +108,30 @@ export function serializeTable(model: TableModel): string {
   return [row(model.header), `| ${delim} |`, ...model.rows.map(row)].join('\n')
 }
 
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // 继续走 textarea 兜底
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  try {
+    return document.execCommand('copy')
+  } finally {
+    textarea.remove()
+  }
+}
+
 /** 表格就地编辑 widget（FR-11b，M4）：contentEditable 单元格 + Tab 跳格 + 增删行列 */
 export class TableWidget extends WidgetType {
   /**
@@ -136,7 +160,7 @@ export class TableWidget extends WidgetType {
 
     const readModel = (): TableModel => {
       const rows = [...table.querySelectorAll('tr')].map((tr) =>
-        [...tr.children].map((c) => (c as HTMLElement).innerText.trim()),
+        [...tr.children].map((c) => ((c as HTMLElement).innerText ?? c.textContent ?? '').trim()),
       )
       return { header: rows[0] ?? [], aligns: model.aligns.slice(0, rows[0]?.length), rows: rows.slice(1) }
     }
@@ -209,52 +233,91 @@ export class TableWidget extends WidgetType {
       if (!table.contains(e.relatedTarget as Node)) commit()
     })
 
-    // 悬浮操作条：增删行列 / 查看源码
+    // 悬浮操作条：增删行列 / 复制整表 / 查看源码
     const bar = document.createElement('div')
     bar.className = 'bmd-table-bar'
-    const ops: [string, string, () => void][] = [
-      ['+行', '在末尾添加一行', () => {
-        const m = readModel()
-        m.rows.push(m.header.map(() => ''))
-        commit(m)
-      }],
-      ['-行', '删除最后一行', () => {
-        const m = readModel()
-        if (m.rows.length > 1) m.rows.pop()
-        commit(m)
-      }],
-      ['+列', '在末尾添加一列', () => {
-        const m = readModel()
-        m.header.push('')
-        m.aligns.push('left')
-        m.rows.forEach((r) => r.push(''))
-        commit(m)
-      }],
-      ['-列', '删除最后一列', () => {
-        const m = readModel()
-        if (m.header.length > 1) {
-          m.header.pop()
-          m.aligns.pop()
-          m.rows.forEach((r) => r.pop())
-        }
-        commit(m)
-      }],
-      ['源码', '编辑 markdown 源码', () => {
-        const pos = view.posAtDOM(wrap)
-        if (pos >= 0) {
-          view.dispatch({ selection: { anchor: pos } })
-          view.focus()
-        }
-      }],
+    const ops: {
+      label: string
+      title: string
+      action: (button: HTMLButtonElement) => void | Promise<void>
+    }[] = [
+      {
+        label: '+行',
+        title: '在末尾添加一行',
+        action: () => {
+          const m = readModel()
+          m.rows.push(m.header.map(() => ''))
+          commit(m)
+        },
+      },
+      {
+        label: '-行',
+        title: '删除最后一行',
+        action: () => {
+          const m = readModel()
+          if (m.rows.length > 1) m.rows.pop()
+          commit(m)
+        },
+      },
+      {
+        label: '+列',
+        title: '在末尾添加一列',
+        action: () => {
+          const m = readModel()
+          m.header.push('')
+          m.aligns.push('left')
+          m.rows.forEach((r) => r.push(''))
+          commit(m)
+        },
+      },
+      {
+        label: '-列',
+        title: '删除最后一列',
+        action: () => {
+          const m = readModel()
+          if (m.header.length > 1) {
+            m.header.pop()
+            m.aligns.pop()
+            m.rows.forEach((r) => r.pop())
+          }
+          commit(m)
+        },
+      },
+      {
+        label: '复制',
+        title: '复制整个表格为 Markdown',
+        action: async (button) => {
+          const old = button.textContent ?? '复制'
+          const ok = await writeClipboard(serializeTable(readModel()))
+          button.textContent = ok ? '已复制' : '复制失败'
+          window.setTimeout(() => {
+            button.textContent = old
+          }, 1200)
+        },
+      },
+      {
+        label: '源码',
+        title: '编辑 markdown 源码',
+        action: () => {
+          const pos = view.posAtDOM(wrap)
+          if (pos >= 0) {
+            view.dispatch({ selection: { anchor: pos } })
+            view.focus()
+          }
+        },
+      },
     ]
-    for (const [label, title, fn] of ops) {
+    for (const { label, title, action } of ops) {
       const b = document.createElement('button')
       b.type = 'button'
       b.textContent = label
       b.title = title
       b.addEventListener('mousedown', (e) => {
+        // 鼠标操作不抢走正在编辑的单元格焦点；键盘激活仍由 click 处理。
         e.preventDefault()
-        fn()
+      })
+      b.addEventListener('click', () => {
+        void Promise.resolve(action(b)).catch((err) => console.error('表格操作失败:', err))
       })
       bar.appendChild(b)
     }

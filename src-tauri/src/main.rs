@@ -9,13 +9,20 @@ mod watcher;
 
 use tauri::Manager;
 
-/// 启动参数里的文件路径（Windows/Linux「打开方式」）
+/// macOS Apple Event 递来的文件路径缓冲：冷启动时 Opened 事件早于前端监听器
+/// 注册，emit 会丢；先存这里，前端就绪后经 initial_files 一并取走。
+#[derive(Default)]
+struct OpenedFiles(std::sync::Mutex<Vec<String>>);
+
+/// 启动时待打开的文件路径（Windows/Linux 启动参数 + macOS Apple Event 缓冲）
 #[tauri::command]
-fn initial_files() -> Vec<String> {
-    std::env::args()
+fn initial_files(opened: tauri::State<'_, OpenedFiles>) -> Vec<String> {
+    let mut files: Vec<String> = std::env::args()
         .skip(1)
         .filter(|a| !a.starts_with('-'))
-        .collect()
+        .collect();
+    files.append(&mut opened.0.lock().unwrap());
+    files
 }
 
 fn main() {
@@ -32,6 +39,8 @@ fn main() {
                 )
                 .build(),
         )
+        .manage(OpenedFiles::default())
+        .manage(commands::SearchState::default())
         .manage(watcher::WatchState::default())
         .manage(pdf::PdfState::default())
         .manage(preview::PreviewState::default())
@@ -40,6 +49,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::scan_dir,
             commands::search_text,
+            commands::cancel_search,
             commands::read_doc,
             commands::write_doc_atomic,
             commands::create_entry,
@@ -94,9 +104,13 @@ fn main() {
             if let Ok(out) = std::env::var("BMD_PDF_SMOKE") {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let r =
-                        pdf::export_html_to_pdf(handle.clone(), pdf::smoke_html(), None, out.into())
-                            .await;
+                    let r = pdf::export_html_to_pdf(
+                        handle.clone(),
+                        pdf::smoke_html(),
+                        None,
+                        out.into(),
+                    )
+                    .await;
                     match r {
                         Ok(()) => {
                             eprintln!("BMD_PDF_SMOKE: ok");
@@ -124,6 +138,13 @@ fn main() {
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect();
                 if !paths.is_empty() {
+                    // 先入缓冲（冷启动竞态下 emit 会丢），再 emit 覆盖已在运行的场景；
+                    // 前端 openFile 按路径去重，两路重复送达无副作用
+                    app.state::<OpenedFiles>()
+                        .0
+                        .lock()
+                        .unwrap()
+                        .extend(paths.clone());
                     let _ = app.emit("open-file", paths);
                 }
             }

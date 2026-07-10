@@ -7,7 +7,9 @@ export type Theme = 'dark' | 'light'
 function initialTheme(): Theme {
   const saved = localStorage.getItem('bmd.theme')
   if (saved === 'dark' || saved === 'light') return saved
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light'
 }
 
 export const useUi = defineStore('ui', {

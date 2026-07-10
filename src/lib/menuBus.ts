@@ -1,19 +1,29 @@
-// ContextMenu 单例桥：App 挂载后注入，任何组件可唤起右键菜单/输入弹窗
-import type { MenuItem } from '@/components/ContextMenu.vue'
+// 应用级菜单/对话框端口：只声明纯类型，由 App 注入 Vue 实现。
+export interface MenuItem {
+  label: string
+  danger?: boolean
+  action: () => void | Promise<void>
+}
 
-interface MenuApi {
+export interface ChoiceItem {
+  value: string
+  label: string
+  primary?: boolean
+  danger?: boolean
+}
+
+export interface MenuApi {
   showMenu(x: number, y: number, items: MenuItem[]): void
   askText(title: string, initial?: string): Promise<string | null>
+  askChoice(title: string, message: string, items: ChoiceItem[]): Promise<string | null>
 }
 
 let api: MenuApi | null = null
 
-export function registerMenu(a: MenuApi) {
+export function registerMenu(a: MenuApi | null) {
   api = a
 }
 
 export function menu(): MenuApi | null {
   return api
 }
-
-export type { MenuItem }

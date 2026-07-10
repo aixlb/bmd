@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { parseTable, serializeTable } from '../core/preview/widgets'
+import { describe, expect, it, vi } from 'vitest'
+import { parseTable, serializeTable, TableWidget } from '../core/preview/widgets'
 import { buildExportHtml } from '../src/export/html'
 
 describe('表格序列化（M4 就地编辑的写回路径）', () => {
@@ -30,6 +30,25 @@ describe('表格序列化（M4 就地编辑的写回路径）', () => {
       rows: [['多\n行']],
     })
     expect(out).toContain('多 行')
+  })
+
+  it('就地编辑工具条提供整表复制入口', () => {
+    const dom = new TableWidget('| a | b |\n| - | - |\n| 1 | 2 |').toDOM({} as never)
+    const labels = [...dom.querySelectorAll('button')].map((b) => b.textContent)
+    expect(labels).toContain('复制')
+  })
+
+  it('点击整表复制会写入当前 Markdown 表格', async () => {
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const src = '| a | b |\n| - | - |\n| 1 | 2 |'
+    const dom = new TableWidget(src).toDOM({} as never)
+    const button = [...dom.querySelectorAll('button')].find((item) => item.textContent === '复制')!
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(serializeTable(parseTable(src)!)))
   })
 })
 

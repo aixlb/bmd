@@ -8,6 +8,7 @@ import {
   type ChatWireMsg,
   type EmbedConfig,
   type RagHit,
+  nextSearchRequestId,
 } from '@/lib/ipc'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { useTabs } from '@/stores/tabs'
@@ -230,12 +231,13 @@ export const useAi = defineStore('ai', {
       void this.persist()
     },
 
-    async restore() {
+    async restore(rootOverride?: string | null) {
       if (this.restored) return
       this.restored = true
       const ws = useWorkspace()
+      const root = rootOverride === undefined ? ws.root : rootOverride
       try {
-        const raw = await ipc().loadChats(ws.root ?? '__global__')
+        const raw = await ipc().loadChats(root ?? '__global__')
         const data = JSON.parse(raw)
         if (Array.isArray(data?.sessions)) {
           // 剥离历史数据里可能残留的运行时字段
@@ -270,7 +272,7 @@ export const useAi = defineStore('ai', {
     },
 
     /** 工作区切换（FR 修复 #7）：会话按旧根落盘，再按新根恢复，避免串档 */
-    async reloadForWorkspace(prevRoot: string | null) {
+    async reloadForWorkspace(prevRoot: string | null, nextRoot: string | null) {
       // 旧工作区进行中的请求全部取消
       for (const s of this.sessions) {
         if (s.requestId) void ipc().aiCancel(s.requestId)
@@ -283,7 +285,7 @@ export const useAi = defineStore('ai', {
       this.sessions = []
       this.currentSessionId = null
       this.restored = false
-      await this.restore()
+      await this.restore(nextRoot)
       if (!this.sessions.length) this.newSession()
     },
 
@@ -454,7 +456,7 @@ export const useAi = defineStore('ai', {
       }
       if (call.name === 'search_text') {
         if (typeof args.query !== 'string' || !args.query.trim()) throw new Error('缺少 query 参数')
-        const hits = await api.searchText(ws.root, args.query, 20)
+        const hits = await api.searchText(ws.root, args.query, 20, nextSearchRequestId(), 'ai')
         if (!hits.length) return '（无匹配）'
         return hits
           .map((h) => `${h.path}${h.line > 0 ? ` 第${h.line}行` : ''}（命中 ${h.count} 处）`)

@@ -10,12 +10,14 @@ import { isMac, keyHint } from '@/lib/shortcuts'
 const ai = useAi()
 const tabs = useTabs()
 const ui = useUi()
+const emit = defineEmits<{ requestClose: [] }>()
 // macOS Overlay 模式保留原生红绿灯，左侧让位
 const trafficLightPad = isTauri && isMac
 // Windows/Linux 无边框窗口：自绘窗口控制按钮（参考 v2script TitleBar）
 const showWinControls = isTauri && !isMac
 const maximized = ref(false)
 let win: Awaited<ReturnType<typeof getWin>> | null = null
+let unlistenResize: (() => void) | null = null
 
 async function getWin() {
   const { getCurrentWindow } = await import('@tauri-apps/api/window')
@@ -26,7 +28,7 @@ onMounted(async () => {
   if (!showWinControls) return
   win = await getWin()
   maximized.value = await win.isMaximized()
-  void win.onResized(async () => {
+  unlistenResize = await win.onResized(async () => {
     maximized.value = (await win?.isMaximized()) ?? false
   })
 })
@@ -38,7 +40,7 @@ function winToggleMax() {
   void win?.toggleMaximize()
 }
 function winClose() {
-  void win?.close()
+  emit('requestClose')
 }
 
 // 标签溢出翻阅：« » 单向滚动；激活标签自动滚入可视区
@@ -64,6 +66,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateArrows)
+  unlistenResize?.()
 })
 
 watch(
@@ -112,11 +115,12 @@ function onTabContextMenu(e: MouseEvent, t: Tab) {
         v-for="t in tabs.tabs"
         :key="t.id"
         class="tab"
-        :class="{ active: t.id === tabs.activeId }"
+        :class="{ active: t.id === tabs.activeId, preview: t.preview }"
         role="tab"
         :aria-selected="t.id === tabs.activeId"
-        :title="t.path ?? t.title"
+        :title="t.preview ? `${t.path ?? t.title}\n预览中，双击固定打开` : (t.path ?? t.title)"
         @click="tabs.activate(t.id)"
+        @dblclick.prevent="tabs.confirmPreview(t.id)"
         @auxclick.middle.prevent="tabs.closeTab(t.id)"
         @contextmenu.prevent="onTabContextMenu($event, t)"
       >
@@ -290,6 +294,10 @@ function onTabContextMenu(e: MouseEvent, t: Tab) {
 .tab-title {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.tab.preview .tab-title {
+  font-style: italic;
 }
 
 .dot {

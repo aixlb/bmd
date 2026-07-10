@@ -1,5 +1,23 @@
 import { defineStore } from 'pinia'
+import { isReadableTextPath } from '@/lib/fileTypes'
 import { ipc, type Entry } from '@/lib/ipc'
+
+export type FileSortMode = 'type' | 'nameAsc' | 'nameDesc'
+
+const SORT_KEY = 'bmd.fileSort'
+
+function initialSortMode(): FileSortMode {
+  const saved = localStorage.getItem(SORT_KEY)
+  return saved === 'type' || saved === 'nameAsc' || saved === 'nameDesc' ? saved : 'type'
+}
+
+function sortEntries(entries: Entry[], mode: FileSortMode): Entry[] {
+  const byName = (a: Entry, b: Entry) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+  const out = [...entries]
+  if (mode === 'nameAsc') return out.sort(byName)
+  if (mode === 'nameDesc') return out.sort((a, b) => byName(b, a))
+  return out.sort((a, b) => Number(b.isDir) - Number(a.isDir) || byName(a, b))
+}
 
 export const useWorkspace = defineStore('workspace', {
   state: () => ({
@@ -8,21 +26,36 @@ export const useWorkspace = defineStore('workspace', {
     children: {} as Record<string, Entry[]>,
     expanded: {} as Record<string, boolean>,
     filter: '',
+    sortMode: initialSortMode(),
   }),
 
   getters: {
     rootName: (s) => (s.root ? s.root.split(/[/\\]/).filter(Boolean).pop() : null),
-    rootEntries: (s) => (s.root ? (s.children[s.root] ?? []) : []),
+    rootEntries: (s) => (s.root ? sortEntries(s.children[s.root] ?? [], s.sortMode) : []),
+    sortedEntries: (s) => (entries: Entry[]) => sortEntries(entries, s.sortMode),
   },
 
   actions: {
+    setSortMode(mode: FileSortMode) {
+      this.sortMode = mode
+      localStorage.setItem(SORT_KEY, mode)
+    },
+
     async openFolder(path?: string) {
       const target = path ?? (await ipc().pickFolder())
       if (!target) return
       const prev = this.root
+      if (prev && prev !== target) {
+        try {
+          await ipc().stopWatch()
+        } catch {
+          // 旧监听不存在或停止失败时继续切换；新监听会在下方重建
+        }
+      }
       this.root = target
       this.children = {}
       this.expanded = {}
+      this.filter = ''
       await this.ensureChildren(target)
       // 外部变更监听（FR-05）
       try {
@@ -30,15 +63,22 @@ export const useWorkspace = defineStore('workspace', {
       } catch (e) {
         console.warn('[bmd] 目录监听启动失败', e)
       }
-      // AI 聊天存档跟随工作区（动态 import 避免与 ai store 的模块循环）
-      if (prev !== target) {
+    },
+
+    /** 进入无工作区的单文件模式：左侧不再展示上次打开的文件夹 */
+    async clear() {
+      const prev = this.root
+      if (prev) {
         try {
-          const { useAi } = await import('@/stores/ai')
-          await useAi().reloadForWorkspace(prev)
-        } catch (e) {
-          console.warn('[bmd] 切换工作区时聊天存档迁移失败', e)
+          await ipc().stopWatch()
+        } catch {
+          // 没有活动监听时忽略
         }
       }
+      this.root = null
+      this.children = {}
+      this.expanded = {}
+      this.filter = ''
     },
 
     async ensureChildren(dir: string) {
@@ -55,8 +95,8 @@ export const useWorkspace = defineStore('workspace', {
       if (this.expanded[dir]) await this.ensureChildren(dir)
     },
 
-    /** 收集工作区全部 markdown 文件（QuickOpen 用，BFS 限深） */
-    async collectAllMd(): Promise<string[]> {
+    /** 收集工作区全部可读取文本文件（QuickOpen / AI @文件用，BFS 限深） */
+    async collectAllText(): Promise<string[]> {
       if (!this.root) return []
       const out: string[] = []
       let frontier = [this.root]
@@ -71,7 +111,7 @@ export const useWorkspace = defineStore('workspace', {
           }
           for (const e of entries) {
             if (e.isDir) next.push(e.path)
-            else if (e.isMd) out.push(e.path)
+            else if (e.isText || isReadableTextPath(e.path)) out.push(e.path)
           }
         }
         frontier = next

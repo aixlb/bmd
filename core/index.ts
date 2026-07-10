@@ -158,6 +158,33 @@ export function createBmdState(doc: string, config: BmdCoreConfig = {}): EditorS
   return EditorState.create({ doc, extensions: bmdExtensions(config) })
 }
 
+export function createPlainTextState(doc: string, config: BmdCoreConfig = {}): EditorState {
+  return EditorState.create({
+    doc,
+    extensions: [
+      history(),
+      drawSelection(),
+      closeBrackets(),
+      search({ top: true }),
+      zhPhrases,
+      highlightSelectionMatches(),
+      keymap.of([...closeBracketsKeymap, ...searchKeymap, ...defaultKeymap, ...historyKeymap]),
+      EditorView.lineWrapping,
+      bmdBaseTheme,
+      EditorView.theme({
+        '.cm-scroller': {
+          fontFamily: 'var(--bmd-font-mono)',
+          lineHeight: '1.65',
+        },
+      }),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) config.onDocChanged?.(update.state)
+        config.onViewUpdate?.(update)
+      }),
+    ],
+  })
+}
+
 export interface BmdEditor {
   view: EditorView
   getMarkdown: () => string

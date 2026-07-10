@@ -1,26 +1,35 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import FileNode from './FileNode.vue'
 import Outline from './Outline.vue'
-import { ipc, type SearchHit } from '@/lib/ipc'
+import { ipc, nextSearchRequestId, type SearchHit } from '@/lib/ipc'
+import { menu, type MenuItem } from '@/lib/menuBus'
 import { keyHint } from '@/lib/shortcuts'
 import { useTabs } from '@/stores/tabs'
+import { useFiles } from '@/stores/files'
 import { useUi } from '@/stores/ui'
-import { useWorkspace } from '@/stores/workspace'
+import { useWorkspace, type FileSortMode } from '@/stores/workspace'
 
 const ui = useUi()
 const workspace = useWorkspace()
 const tabs = useTabs()
+const files = useFiles()
 const resizing = ref(false)
+const singleFileTab = computed(() => (!workspace.root ? (tabs.active ?? tabs.tabs[0] ?? null) : null))
 
 /** 全文搜索：防抖后调用后端在整个工作区内匹配文件名与内容 */
 const hits = ref<SearchHit[]>([])
 const searching = ref(false)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
+let hitClickTimer: ReturnType<typeof setTimeout> | null = null
+let searchRequestId = 0
 
 watch(
   () => workspace.filter,
   (raw) => {
+    const requestId = nextSearchRequestId()
+    searchRequestId = requestId
+    void ipc().cancelSearch(requestId).catch((e) => console.warn('[bmd] 取消旧搜索失败', e))
     if (searchTimer) clearTimeout(searchTimer)
     const query = raw.trim()
     if (!query || !workspace.root) {
@@ -30,12 +39,16 @@ watch(
     }
     searching.value = true
     searchTimer = setTimeout(async () => {
+      const root = workspace.root
+      if (!root || requestId !== searchRequestId) return
       try {
-        const result = await ipc().searchText(workspace.root!, query, 50)
+        const result = await ipc().searchText(root, query, 50, requestId)
         // 输入可能已变化，丢弃过期结果
-        if (workspace.filter.trim() === query) hits.value = result
+        if (requestId === searchRequestId && workspace.filter.trim() === query) hits.value = result
+      } catch (e) {
+        if (requestId === searchRequestId) console.warn('[bmd] 全文搜索失败', e)
       } finally {
-        searching.value = false
+        if (requestId === searchRequestId) searching.value = false
       }
     }, 220)
   },
@@ -74,6 +87,55 @@ function startResize(e: PointerEvent) {
   window.addEventListener('pointercancel', up) // 触摸中断等场景也要撤监听
   e.preventDefault()
 }
+
+async function openFile() {
+  const path = await ipc().pickFile()
+  if (path) await files.openPath(path)
+}
+
+async function createRootEntry(isDir: boolean) {
+  if (!workspace.root) return
+  await files.createEntry(workspace.root, isDir)
+}
+
+function sortLabel(mode = workspace.sortMode) {
+  if (mode === 'nameAsc') return '名称升序'
+  if (mode === 'nameDesc') return '名称降序'
+  return '类型分组'
+}
+
+function showSortMenu(e: MouseEvent) {
+  const m = menu()
+  if (!m) return
+  const item = (mode: FileSortMode): MenuItem => ({
+    label: `${workspace.sortMode === mode ? '✓ ' : ''}${sortLabel(mode)}`,
+    action: () => workspace.setSortMode(mode),
+  })
+  m.showMenu(e.clientX, e.clientY, [item('type'), item('nameAsc'), item('nameDesc')])
+}
+
+function onHitClick(path: string) {
+  if (hitClickTimer) clearTimeout(hitClickTimer)
+  hitClickTimer = setTimeout(() => {
+    hitClickTimer = null
+    void files.previewPath(path)
+  }, 180)
+}
+
+function onHitDblClick(path: string) {
+  if (hitClickTimer) {
+    clearTimeout(hitClickTimer)
+    hitClickTimer = null
+  }
+  void files.openPath(path)
+}
+
+onBeforeUnmount(() => {
+  if (searchTimer) clearTimeout(searchTimer)
+  if (hitClickTimer) clearTimeout(hitClickTimer)
+  searchRequestId = nextSearchRequestId()
+  void ipc().cancelSearch(searchRequestId)
+})
 </script>
 
 <template>
@@ -100,9 +162,48 @@ function startResize(e: PointerEvent) {
         <input v-model="workspace.filter" placeholder="搜索文件名与全文…" spellcheck="false" />
       </div>
 
+      <div v-if="workspace.root" class="file-toolbar">
+        <div class="root-name" :title="workspace.root">{{ workspace.rootName }}</div>
+        <div class="file-actions" aria-label="文件操作">
+          <button title="新建文件" aria-label="新建文件" @click="createRootEntry(false)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6" />
+              <path d="M12 18v-6" />
+              <path d="M9 15h6" />
+            </svg>
+          </button>
+          <button title="新建文件夹" aria-label="新建文件夹" @click="createRootEntry(true)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+              <path d="M12 11v6" />
+              <path d="M9 14h6" />
+            </svg>
+          </button>
+          <button :title="`排序：${sortLabel()}`" aria-label="排序" @click="showSortMenu">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 5h10" />
+              <path d="M11 12h7" />
+              <path d="M11 19h4" />
+              <path d="m3 17 3 3 3-3" />
+              <path d="M6 18V4" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
       <div class="tree">
         <template v-if="!workspace.root">
-          <div class="empty">
+          <div v-if="singleFileTab" class="empty single-file">
+            <img class="empty-img" src="@/assets/sidebar-empty.png" alt="" draggable="false" />
+            <p>单文件模式</p>
+            <strong :title="singleFileTab.path ?? singleFileTab.title">{{ singleFileTab.title }}</strong>
+            <div class="empty-actions">
+              <button @click="openFile()">打开文件</button>
+              <button class="primary" @click="workspace.openFolder()">打开文件夹</button>
+            </div>
+          </div>
+          <div v-else class="empty">
             <img class="empty-img" src="@/assets/sidebar-empty.png" alt="" draggable="false" />
             <p>还没有打开文件夹</p>
             <button class="primary" @click="workspace.openFolder()">打开文件夹</button>
@@ -110,13 +211,21 @@ function startResize(e: PointerEvent) {
           </div>
         </template>
         <template v-else-if="workspace.filter.trim()">
-          <button v-for="h in hits" :key="h.path" class="hit" :title="h.path" @click="tabs.openFile(h.path)">
+          <button
+            v-for="h in hits"
+            :key="h.path"
+            class="hit"
+            :title="h.path"
+            @click="onHitClick(h.path)"
+            @dblclick.prevent="onHitDblClick(h.path)"
+          >
             <div class="hit-top">
               <span class="hit-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10" />
-                  <path d="M7 15v-6l2 2l2 -2v6" />
-                  <path d="M14 13l2 2l2 -2m-2 2v-6" />
+                  <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
+                  <path d="M14 2v5a1 1 0 0 0 1 1h5" />
+                  <path d="M8 13h8" />
+                  <path d="M8 17h5" />
                 </svg>
               </span>
               <span class="hit-name">
@@ -132,7 +241,6 @@ function startResize(e: PointerEvent) {
           <p v-else-if="!searching && !hits.length" class="hint pad">无匹配</p>
         </template>
         <template v-else>
-          <div class="root-name" :title="workspace.root">{{ workspace.rootName }}</div>
           <FileNode v-for="e in workspace.rootEntries" :key="e.path" :entry="e" :depth="0" />
         </template>
       </div>
@@ -184,7 +292,7 @@ function startResize(e: PointerEvent) {
 }
 
 .filter {
-  padding: 2px 10px 8px;
+  padding: 2px 10px 7px;
 }
 
 .filter input {
@@ -207,6 +315,13 @@ function startResize(e: PointerEvent) {
   flex: 1;
   overflow: auto;
   padding: 0 6px 12px;
+}
+
+.file-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 7px 10px;
 }
 
 .hit {
@@ -284,7 +399,9 @@ function startResize(e: PointerEvent) {
 }
 
 .root-name {
-  padding: 4px 10px 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -293,6 +410,35 @@ function startResize(e: PointerEvent) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.file-actions {
+  display: flex;
+  flex: none;
+  gap: 3px;
+}
+
+.file-actions button {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--bmd-text-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.file-actions button:hover {
+  color: var(--bmd-text);
+  background: color-mix(in srgb, var(--bmd-text) 6%, transparent);
+  border-color: var(--bmd-border);
+}
+
+.file-actions svg {
+  width: 15px;
+  height: 15px;
 }
 
 .empty {
@@ -313,6 +459,41 @@ function startResize(e: PointerEvent) {
   opacity: 0.9;
   user-select: none;
   -webkit-user-drag: none;
+}
+
+.empty.single-file strong {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bmd-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.empty-actions button {
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--bmd-text);
+  background: color-mix(in srgb, var(--bmd-text) 7%, transparent);
+  border: 1px solid var(--bmd-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.empty-actions button.primary {
+  color: #fff;
+  background: var(--bmd-accent-gradient);
+  border: none;
 }
 
 [data-theme='dark'] .empty-img {

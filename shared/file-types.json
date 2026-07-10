@@ -1,0 +1,17 @@
+{
+  "markdownExtensions": ["md", "markdown"],
+  "textExtensions": [
+    "txt", "text", "csv", "tsv", "json", "jsonc", "yaml", "yml", "toml",
+    "ini", "conf", "config", "cfg", "env", "log", "xml", "css", "scss",
+    "sass", "less", "js", "mjs", "cjs", "ts", "tsx", "jsx", "vue",
+    "svelte", "astro", "rs", "go", "py", "rb", "php", "java", "kt",
+    "kts", "swift", "c", "h", "cc", "cpp", "cxx", "hpp", "cs", "sql",
+    "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd", "properties", "lock"
+  ],
+  "textNames": [
+    "license", "notice", "readme", "changelog", "makefile", "dockerfile",
+    ".env", ".gitignore", ".gitattributes", ".editorconfig", ".npmrc"
+  ],
+  "htmlExtensions": ["html", "htm"],
+  "imageExtensions": ["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico", "tif", "tiff"]
+}

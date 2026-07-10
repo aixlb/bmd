@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import AiDiffModal from './AiDiffModal.vue'
 import AiMessage from './AiMessage.vue'
 import AiProviderModal from './AiProviderModal.vue'
@@ -18,6 +18,15 @@ const listEl = ref<HTMLElement | null>(null)
 const resizing = ref(false)
 const mentionOpen = ref(false)
 const mentionFiles = ref<string[]>([])
+const activeDocLabel = computed(() => {
+  const t = tabs.active
+  if (!t) return '无文档'
+  const badges: string[] = []
+  if (t.preview) badges.push('临时')
+  if (t.kind === 'text') badges.push('纯文本')
+  if (t.kind === 'html' || t.kind === 'image') badges.push('只读')
+  return badges.length ? `${t.title} · ${badges.join('/')}` : t.title
+})
 
 const diff = reactive({
   visible: false,
@@ -142,7 +151,7 @@ function closeSession(id: string) {
 
 async function toggleMention() {
   mentionOpen.value = !mentionOpen.value
-  if (mentionOpen.value) mentionFiles.value = await workspace.collectAllMd()
+  if (mentionOpen.value) mentionFiles.value = await workspace.collectAllText()
 }
 
 function toggleMentionFile(path: string) {
@@ -226,7 +235,7 @@ onUnmounted(() => {
 
     <div class="context-chips">
       <button class="chip" :class="{ on: ai.includeDoc }" @click="ai.includeDoc = !ai.includeDoc">
-        📄 {{ tabs.active?.title ?? '无文档' }}
+        📄 {{ activeDocLabel }}
       </button>
       <button
         class="chip"
@@ -271,7 +280,7 @@ onUnmounted(() => {
       >
         {{ workspace.root ? f.slice(workspace.root.length + 1) : f }}
       </button>
-      <p v-if="!mentionFiles.length" class="dim pad">工作区没有 markdown 文件</p>
+      <p v-if="!mentionFiles.length" class="dim pad">工作区没有可附加的文本文件</p>
     </div>
 
     <footer class="composer">

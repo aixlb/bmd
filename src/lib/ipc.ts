@@ -1,16 +1,26 @@
 // IPC 抽象层：Tauri 环境走 invoke，浏览器/测试环境走内存 mock。
 // 所有磁盘写入统一经此层（DESIGN.md §2 职责边界）。
 
+import {
+  OPENABLE_FILE_EXTENSIONS,
+  TEXT_FILE_EXTENSIONS,
+  isImagePath,
+} from './fileTypes'
+
 export interface Entry {
   name: string
   path: string
   isDir: boolean
   isMd: boolean
+  /** 后端按扩展名或内容探测确认可按文本打开。 */
+  isText: boolean
 }
 
 export interface DocPayload {
   content: string
   mtimeMs: number
+  /** IANA/应用编码标签；写回时保持该编码。 */
+  encoding: string
 }
 
 export interface Session {
@@ -31,7 +41,14 @@ export interface SearchHit {
 export interface Ipc {
   scanDir(path: string): Promise<Entry[]>
   /** 工作区全文搜索：匹配文件名与 md 内容 */
-  searchText(root: string, query: string, limit: number): Promise<SearchHit[]>
+  searchText(
+    root: string,
+    query: string,
+    limit: number,
+    requestId: number,
+    scope?: string,
+  ): Promise<SearchHit[]>
+  cancelSearch(requestId: number, scope?: string): Promise<void>
   readDoc(path: string): Promise<DocPayload>
   /** AI 工具路径约束：path 规范化后必须在 root 内，否则 reject（防 ../ 与符号链接逃逸） */
   canonInRoot(root: string, path: string): Promise<string>
@@ -40,7 +57,12 @@ export interface Ipc {
   /** 选择一张图片（识图附件）；取消返回 null */
   pickImage(): Promise<string | null>
   /** 返回新 mtime；期望 mtime 不匹配时 reject('conflict') */
-  writeDocAtomic(path: string, content: string, expectedMtimeMs: number | null): Promise<number>
+  writeDocAtomic(
+    path: string,
+    content: string,
+    expectedMtimeMs: number | null,
+    encoding?: string,
+  ): Promise<number>
   createEntry(parent: string, name: string, isDir: boolean): Promise<string>
   renameEntry(path: string, newName: string): Promise<string>
   trashEntry(path: string): Promise<void>
@@ -152,7 +174,43 @@ export type AiEvent =
   | { type: 'done' }
   | { type: 'error'; message: string }
 
+/** 按领域暴露窄端口，调用方可在测试或后续重构中只依赖需要的能力。 */
+export type FileIpc = Pick<
+  Ipc,
+  | 'scanDir'
+  | 'searchText'
+  | 'cancelSearch'
+  | 'readDoc'
+  | 'writeDocAtomic'
+  | 'createEntry'
+  | 'renameEntry'
+  | 'trashEntry'
+  | 'revealInOs'
+  | 'startWatch'
+  | 'stopWatch'
+  | 'onFsChanged'
+>
+export type SessionIpc = Pick<Ipc, 'loadSession' | 'saveSession' | 'initialFiles'>
+export type DialogIpc = Pick<Ipc, 'pickFolder' | 'pickFile' | 'pickImage' | 'pickSavePath' | 'confirm'>
+export type AiIpc = Pick<
+  Ipc,
+  | 'setApiKey'
+  | 'hasApiKey'
+  | 'aiChat'
+  | 'aiCancel'
+  | 'loadChats'
+  | 'saveChats'
+  | 'ragIndex'
+  | 'ragSearch'
+>
+
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+// WebView 重载时 Rust SearchState 仍可能存活；时间戳基数保证新页面的请求号继续向前。
+let searchRequestSeq = Date.now() * 1000
+
+export function nextSearchRequestId(): number {
+  return ++searchRequestSeq
+}
 
 function tauriIpc(): Ipc {
   // 动态 import 避免浏览器环境加载 @tauri-apps 模块
@@ -162,10 +220,13 @@ function tauriIpc(): Ipc {
   }
   return {
     scanDir: (path) => inv('scan_dir', { path }),
-    searchText: (root, query, limit) => inv('search_text', { root, query, limit }),
+    searchText: (root, query, limit, requestId, scope) =>
+      inv('search_text', { root, query, limit, requestId, scope: scope ?? 'sidebar' }),
+    cancelSearch: (requestId, scope) =>
+      inv('cancel_search', { requestId, scope: scope ?? 'sidebar' }),
     readDoc: (path) => inv('read_doc', { path }),
-    writeDocAtomic: (path, content, expectedMtimeMs) =>
-      inv('write_doc_atomic', { path, content, expectedMtimeMs }),
+    writeDocAtomic: (path, content, expectedMtimeMs, encoding) =>
+      inv('write_doc_atomic', { path, content, expectedMtimeMs, encoding: encoding ?? 'utf-8' }),
     createEntry: (parent, name, isDir) => inv('create_entry', { parent, name, isDir }),
     renameEntry: (path, newName) => inv('rename_entry', { path, newName }),
     trashEntry: (path) => inv('trash_entry', { path }),
@@ -184,11 +245,13 @@ function tauriIpc(): Ipc {
         filters: [
           {
             name: '支持的文件',
-            extensions: ['md', 'markdown', 'html', 'htm', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico'],
+            extensions: OPENABLE_FILE_EXTENSIONS,
           },
           { name: 'Markdown', extensions: ['md', 'markdown'] },
+          { name: '文本', extensions: [...TEXT_FILE_EXTENSIONS] },
           { name: 'HTML', extensions: ['html', 'htm'] },
           { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico'] },
+          { name: '所有文件', extensions: ['*'] },
         ],
       })
       return typeof r === 'string' ? r : null
@@ -255,6 +318,7 @@ function tauriIpc(): Ipc {
 export function createMockIpc(seed?: Record<string, string>): Ipc {
   const ROOT = '/demo'
   const files = new Map<string, { content: string; mtime: number }>()
+  const createMockDirs = new Set<string>([ROOT])
   let clock = 1000
   const defaults: Record<string, string> = seed ?? {
     '/demo/README.md': `# bmd 全元素演示
@@ -327,7 +391,19 @@ graph LR
 <style>body{font:15px/1.8 -apple-system,sans-serif;max-width:640px;margin:40px auto;padding:0 24px}</style>
 </head><body><h1>HTML 只读预览</h1><p>这是 <strong>bmd</strong> 的 HTML 预览示例：只渲染，不可编辑。</p></body></html>`,
   }
-  for (const [k, v] of Object.entries(defaults)) files.set(k, { content: v, mtime: ++clock })
+  const addParentDirs = (path: string) => {
+    let parent = path.slice(0, path.lastIndexOf('/'))
+    while (parent) {
+      createMockDirs.add(parent)
+      const next = parent.slice(0, parent.lastIndexOf('/'))
+      if (next === parent) break
+      parent = next
+    }
+  }
+  for (const [k, v] of Object.entries(defaults)) {
+    files.set(k, { content: v, mtime: ++clock })
+    addParentDirs(k)
+  }
   let session: Session | null = null
 
   const dirOf = (p: string) => p.slice(0, p.lastIndexOf('/'))
@@ -341,27 +417,40 @@ graph LR
         const rest = p.slice(path.length + 1)
         const slash = rest.indexOf('/')
         if (slash === -1) {
-          out.push({ name: rest, path: p, isDir: false, isMd: /\.(md|markdown)$/i.test(rest) })
+          out.push({
+            name: rest,
+            path: p,
+            isDir: false,
+            isMd: /\.(md|markdown)$/i.test(rest),
+            isText: !isImagePath(rest),
+          })
         } else {
           dirs.add(rest.slice(0, slash))
         }
+      }
+      for (const dir of [...createMockDirs]) {
+        if (!dir.startsWith(path + '/')) continue
+        const rest = dir.slice(path.length + 1)
+        if (rest && !rest.includes('/')) dirs.add(rest)
       }
       const dirEntries: Entry[] = [...dirs].map((d) => ({
         name: d,
         path: `${path}/${d}`,
         isDir: true,
         isMd: false,
+        isText: false,
       }))
       const byName = (a: Entry, b: Entry) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())
       return [...dirEntries.sort(byName), ...out.sort(byName)]
     },
-    async searchText(root, query, limit) {
+    async searchText(root, query, limit, _requestId) {
       const q = query.trim().toLowerCase()
       if (!q) return []
       const out: SearchHit[] = []
       for (const [p, f] of files) {
         if (!p.startsWith(root + '/')) continue
-        if (!/\.(md|markdown)$/i.test(p)) continue
+        // mock 文件内容均为字符串；未知扩展也应与 Rust 内容探测一样参与文本搜索。
+        if (isImagePath(p)) continue
         const name = p.split('/').pop() ?? p
         let count = 0
         let line = 0
@@ -382,16 +471,16 @@ graph LR
         }
         if (count > 0 || name.toLowerCase().includes(q)) {
           out.push({ path: p, name, line, preview, count })
-          if (out.length >= limit) break
         }
       }
       const nameHit = (h: SearchHit) => (h.name.toLowerCase().includes(q) ? 1 : 0)
-      return out.sort((a, b) => nameHit(b) - nameHit(a) || b.count - a.count)
+      return out.sort((a, b) => nameHit(b) - nameHit(a) || b.count - a.count).slice(0, limit)
     },
+    async cancelSearch() {},
     async readDoc(path) {
       const f = files.get(path)
       if (!f) throw new Error(`not found: ${path}`)
-      return { content: f.content, mtimeMs: f.mtime }
+      return { content: f.content, mtimeMs: f.mtime, encoding: 'utf-8' }
     },
     async readImageB64() {
       // 浏览器 mock：返回 1x1 透明 PNG
@@ -427,12 +516,17 @@ graph LR
       if (f && expectedMtimeMs !== null && f.mtime !== expectedMtimeMs) throw 'conflict'
       const mtime = ++clock
       files.set(path, { content, mtime })
+      addParentDirs(path)
       return mtime
     },
     async createEntry(parent, name, isDir) {
       const p = `${parent}/${name}`
-      if (files.has(p)) throw new Error('已存在同名文件')
-      if (!isDir) files.set(p, { content: '', mtime: ++clock })
+      if (files.has(p) || createMockDirs.has(p)) throw new Error('已存在同名文件')
+      if (isDir) createMockDirs.add(p)
+      else {
+        files.set(p, { content: '', mtime: ++clock })
+        addParentDirs(p)
+      }
       return p
     },
     async renameEntry(path, newName) {
@@ -442,11 +536,22 @@ graph LR
         files.delete(path)
         files.set(target, f)
       }
+      if (createMockDirs.has(path)) {
+        const movedDirs = [...createMockDirs].filter((dir) => dir === path || dir.startsWith(path + '/'))
+        for (const dir of movedDirs) createMockDirs.delete(dir)
+        for (const dir of movedDirs) createMockDirs.add(target + dir.slice(path.length))
+        const movedFiles = [...files.entries()].filter(([file]) => file.startsWith(path + '/'))
+        for (const [file] of movedFiles) files.delete(file)
+        for (const [file, data] of movedFiles) files.set(target + file.slice(path.length), data)
+      }
       return target
     },
     async trashEntry(path) {
       files.delete(path)
       for (const p of [...files.keys()]) if (p.startsWith(path + '/')) files.delete(p)
+      for (const dir of [...createMockDirs]) {
+        if (dir === path || dir.startsWith(path + '/')) createMockDirs.delete(dir)
+      }
     },
     async revealInOs() {},
     async loadSession() {

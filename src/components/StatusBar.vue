@@ -19,12 +19,14 @@ const savedLabel = computed(() => {
 
 <template>
   <footer class="statusbar">
+    <span v-if="tabs.active?.preview" class="item preview">临时预览</span>
     <span v-if="tabs.active?.kind === 'html'" class="item">HTML 只读预览</span>
     <span v-if="tabs.active?.kind === 'image'" class="item">图片只读预览</span>
-    <span v-if="tabs.active && tabs.active.kind === 'md'" class="item">
+    <span v-if="tabs.active?.kind === 'text'" class="item">纯文本</span>
+    <span v-if="tabs.active && (tabs.active.kind === 'md' || tabs.active.kind === 'text')" class="item">
       {{ ui.counts.words }} 字 · {{ ui.counts.chars }} 字符
     </span>
-    <span v-if="tabs.active && tabs.active.kind === 'md'" class="item">
+    <span v-if="tabs.active && (tabs.active.kind === 'md' || tabs.active.kind === 'text')" class="item">
       行 {{ ui.cursor.line }}，列 {{ ui.cursor.col }}
     </span>
     <span class="spacer" />
@@ -74,5 +76,9 @@ const savedLabel = computed(() => {
 
 .saved {
   color: var(--bmd-text-dim);
+}
+
+.preview {
+  color: var(--bmd-accent);
 }
 </style>

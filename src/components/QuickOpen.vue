@@ -19,7 +19,7 @@ watch(
     if (!v) return
     query.value = ''
     selected.value = 0
-    files.value = await workspace.collectAllMd()
+    files.value = await workspace.collectAllText()
     await nextTick()
     input.value?.focus()
   },

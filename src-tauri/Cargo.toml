@@ -1,6 +1,6 @@
 [package]
 name = "bmd"
-version = "1.0.2"
+version = "1.0.3"
 description = "bmd (Bao Markdown) — WYSIWYG markdown editor"
 authors = ["aixlb"]
 edition = "2021"
@@ -28,6 +28,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 tokio = { version = "1", features = ["sync", "time", "macros"] }
+encoding_rs = "0.8"
+chardetng = "0.1"
 
 # PDF V2 静默导出（DESIGN.md D8 V2）的平台原生打印 API
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -40,6 +42,7 @@ objc2-web-kit = { version = "0.3", features = ["WKWebView", "objc2-app-kit"] }
 # 版本须与 wry 锁定的 webview2-com 一致，否则 with_webview 暴露的类型不匹配
 webview2-com = "0.38"
 windows-core = "0.61"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = "3"

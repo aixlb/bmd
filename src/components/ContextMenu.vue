@@ -1,12 +1,7 @@
 <script setup lang="ts">
 // 通用右键菜单 + 轻量输入弹窗（文件树 FR-04 使用）
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-
-export interface MenuItem {
-  label: string
-  danger?: boolean
-  action: () => void | Promise<void>
-}
+import type { ChoiceItem, MenuItem } from '@/lib/menuBus'
 
 const state = reactive({
   visible: false,
@@ -22,6 +17,14 @@ const prompt = reactive({
   resolve: null as ((v: string | null) => void) | null,
 })
 const promptInput = ref<HTMLInputElement | null>(null)
+
+const choice = reactive({
+  visible: false,
+  title: '',
+  message: '',
+  items: [] as ChoiceItem[],
+  resolve: null as ((v: string | null) => void) | null,
+})
 
 function showMenu(x: number, y: number, items: MenuItem[]) {
   state.items = items
@@ -50,17 +53,38 @@ function settlePrompt(v: string | null) {
   prompt.resolve = null
 }
 
+function askChoice(title: string, message: string, items: ChoiceItem[]): Promise<string | null> {
+  choice.resolve?.(null)
+  choice.title = title
+  choice.message = message
+  choice.items = items
+  choice.visible = true
+  return new Promise((resolve) => {
+    choice.resolve = resolve
+  })
+}
+
+function settleChoice(v: string | null) {
+  choice.visible = false
+  choice.resolve?.(v)
+  choice.resolve = null
+}
+
 function hide() {
   state.visible = false
 }
 
-defineExpose({ showMenu, askText })
+defineExpose({ showMenu, askText, askChoice })
 
 onMounted(() => {
   window.addEventListener('mousedown', hide)
   window.addEventListener('blur', hide)
 })
 onBeforeUnmount(() => {
+  prompt.resolve?.(null)
+  choice.resolve?.(null)
+  prompt.resolve = null
+  choice.resolve = null
   window.removeEventListener('mousedown', hide)
   window.removeEventListener('blur', hide)
 })
@@ -102,6 +126,23 @@ onBeforeUnmount(() => {
         <div class="btns">
           <button @click="settlePrompt(null)">取消</button>
           <button class="primary" @click="settlePrompt(prompt.value.trim() || null)">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="choice.visible" class="prompt-overlay" @mousedown.self="settleChoice(null)">
+      <div class="prompt choice" role="dialog" :aria-label="choice.title" @keydown.esc="settleChoice(null)">
+        <p>{{ choice.title }}</p>
+        <div class="message">{{ choice.message }}</div>
+        <div class="btns">
+          <button
+            v-for="item in choice.items"
+            :key="item.value"
+            :class="{ primary: item.primary, danger: item.danger }"
+            @click="settleChoice(item.value)"
+          >
+            {{ item.label }}
+          </button>
         </div>
       </div>
     </div>
@@ -165,6 +206,14 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
+.prompt .message {
+  margin-bottom: 14px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--bmd-text-dim);
+  white-space: pre-wrap;
+}
+
 .prompt input {
   width: 100%;
   padding: 7px 10px;
@@ -203,5 +252,9 @@ onBeforeUnmount(() => {
   color: #fff;
   background: var(--bmd-accent-gradient);
   border: none;
+}
+
+.btns .danger {
+  color: var(--bmd-danger);
 }
 </style>

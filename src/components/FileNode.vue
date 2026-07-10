@@ -1,26 +1,36 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
-import { isHtmlPath, isImagePath, isOpenablePath } from '@/lib/fileTypes'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { isHtmlPath, isImagePath, isOpenablePath, isPlainTextPath } from '@/lib/fileTypes'
 import { ipc, type Entry } from '@/lib/ipc'
 import { menu, type MenuItem } from '@/lib/menuBus'
+import { useFiles } from '@/stores/files'
 import { useTabs } from '@/stores/tabs'
 import { useWorkspace } from '@/stores/workspace'
 
 const props = defineProps<{ entry: Entry; depth: number }>()
 const workspace = useWorkspace()
 const tabs = useTabs()
+const files = useFiles()
 
 const expanded = computed(() => !!workspace.expanded[props.entry.path])
-const children = computed(() => workspace.children[props.entry.path] ?? [])
+const children = computed(() => workspace.sortedEntries(workspace.children[props.entry.path] ?? []))
 const activePath = computed(() => tabs.active?.path)
 /** HTML 文件：可打开为只读预览标签 */
 const isHtml = computed(() => !props.entry.isDir && isHtmlPath(props.entry.name))
 /** 图片文件：可打开为只读预览标签 */
 const isImage = computed(() => !props.entry.isDir && isImagePath(props.entry.name))
+/** 普通文本文件：可打开为纯文本编辑标签 */
+const isText = computed(
+  () => !props.entry.isDir && (props.entry.isText || isPlainTextPath(props.entry.name)),
+)
+const isOpenable = computed(
+  () => !props.entry.isDir && (props.entry.isText || isOpenablePath(props.entry.name)),
+)
 
-/** 行内重命名（双击 / F2 / 右键菜单） */
+/** 行内重命名（F2 / 右键菜单；不可预览文件仍可双击重命名） */
 const renaming = ref(false)
 const renameInput = ref<HTMLInputElement | null>(null)
+let clickTimer: ReturnType<typeof setTimeout> | null = null
 
 function startRename() {
   if (renaming.value) return
@@ -42,18 +52,7 @@ async function commitRename() {
   renaming.value = false
   const name = value.trim()
   if (!name || name === props.entry.name) return
-  try {
-    const newPath = await ipc().renameEntry(props.entry.path, name)
-    const tab = tabs.tabs.find((t) => t.path === props.entry.path)
-    if (tab) {
-      tab.path = newPath
-      tab.title = name
-    }
-    await workspace.refresh()
-  } catch (e) {
-    // 重名/权限等失败：保留原名，不中断（与右键菜单旧行为一致但不再抛未处理拒绝）
-    console.error('重命名失败:', e)
-  }
+  await files.renameEntry(props.entry.path, props.entry.isDir, props.entry.name, name)
 }
 
 function onRenameKey(e: KeyboardEvent) {
@@ -69,10 +68,30 @@ function onRenameKey(e: KeyboardEvent) {
 function onClick() {
   if (props.entry.isDir) {
     workspace.toggleDir(props.entry.path)
-  } else if (props.entry.isMd || isHtml.value || isImage.value) {
-    tabs.openFile(props.entry.path)
+  } else if (isOpenable.value) {
+    if (clickTimer) clearTimeout(clickTimer)
+    clickTimer = setTimeout(() => {
+      clickTimer = null
+      void files.previewPath(props.entry.path)
+    }, 180)
   }
 }
+
+function onDblClick() {
+  if (clickTimer) {
+    clearTimeout(clickTimer)
+    clickTimer = null
+  }
+  if (isOpenable.value) {
+    void files.openPath(props.entry.path)
+  } else {
+    startRename()
+  }
+}
+
+onBeforeUnmount(() => {
+  if (clickTimer) clearTimeout(clickTimer)
+})
 
 /** 右键菜单（FR-04） */
 function onContextMenu(e: MouseEvent) {
@@ -86,20 +105,13 @@ function onContextMenu(e: MouseEvent) {
     {
       label: '新建文件',
       action: async () => {
-        const name = await m.askText('新建文件', '未命名.md')
-        if (!name) return
-        const p = await ipc().createEntry(parentDir, name, false)
-        await workspace.refresh()
-        if (isOpenablePath(p)) await tabs.openFile(p)
+        await files.createEntry(parentDir, false)
       },
     },
     {
       label: '新建文件夹',
       action: async () => {
-        const name = await m.askText('新建文件夹', '新文件夹')
-        if (!name) return
-        await ipc().createEntry(parentDir, name, true)
-        await workspace.refresh()
+        await files.createEntry(parentDir, true)
       },
     },
     {
@@ -114,14 +126,7 @@ function onContextMenu(e: MouseEvent) {
       label: '删除（移入回收站）',
       danger: true,
       action: async () => {
-        if (!(await ipc().confirm(`把「${entry.name}」移入回收站？`, '删除'))) return
-        await ipc().trashEntry(entry.path)
-        const tab = tabs.tabs.find((t) => t.path === entry.path)
-        if (tab) {
-          tab.dirty = false
-          await tabs.closeTab(tab.id)
-        }
-        await workspace.refresh()
+        await files.trashEntry(entry.path, entry.isDir, entry.name)
       },
     },
   ]
@@ -136,14 +141,15 @@ function onContextMenu(e: MouseEvent) {
       :class="{
         dir: entry.isDir,
         md: entry.isMd,
+        text: isText,
         html: isHtml,
         image: isImage,
-        other: !entry.isDir && !entry.isMd && !isHtml && !isImage,
+        other: !entry.isDir && !isOpenable,
         active: entry.path === activePath,
       }"
       :style="{ paddingLeft: `${10 + depth * 14}px` }"
       @click="onClick"
-      @dblclick.prevent="startRename"
+      @dblclick.prevent="onDblClick"
       @keydown.f2.prevent="startRename"
       @contextmenu.prevent="onContextMenu"
     >
@@ -172,6 +178,12 @@ function onContextMenu(e: MouseEvent) {
           <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
           <circle cx="9" cy="9" r="2" />
           <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+        </svg>
+        <svg v-else-if="isText" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
+          <path d="M14 2v5a1 1 0 0 0 1 1h5" />
+          <path d="M8 13h8" />
+          <path d="M8 17h5" />
         </svg>
         <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
@@ -223,7 +235,8 @@ function onContextMenu(e: MouseEvent) {
   background: color-mix(in srgb, var(--bmd-accent-a) 16%, transparent);
 }
 
-.node.md {
+.node.md,
+.node.text {
   color: var(--bmd-text);
 }
 

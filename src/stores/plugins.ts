@@ -21,11 +21,11 @@ import {
   type SettingTab,
   type StatusItem,
 } from '@/lib/pluginApi'
-import { isMac } from '@/lib/shortcuts'
+import { isMac } from '@/lib/platform'
 import { useTabs } from '@/stores/tabs'
 import { useUi } from '@/stores/ui'
 
-export const APP_VERSION = '1.0.2'
+export const APP_VERSION = '1.0.3'
 
 export interface InstalledPlugin {
   manifest: PluginManifest
@@ -39,6 +39,7 @@ const instances = new Map<string, { mod: PluginModule; offs: (() => void)[] }>()
 
 // 宿主事件总线（file-open / theme-change）
 const listeners = new Map<PluginEvent, Set<(payload?: unknown) => void>>()
+let bridgeStops: (() => void)[] = []
 function emit(event: PluginEvent, payload?: unknown) {
   for (const cb of listeners.get(event) ?? []) {
     try {
@@ -83,19 +84,23 @@ export const usePlugins = defineStore('plugins', {
     /** App 启动时调用：定位插件目录 → 扫描 → 加载已启用插件 */
     async init() {
       // 宿主事件桥接：活动标签变化 → file-open；主题变化 → theme-change
-      const tabs = useTabs()
-      const ui = useUi()
-      watch(
-        () => tabs.activeId,
-        () => {
-          const t = tabs.active
-          emit('file-open', t ? { path: t.path, title: t.title } : null)
-        },
-      )
-      watch(
-        () => ui.theme,
-        (theme) => emit('theme-change', theme),
-      )
+      if (!bridgeStops.length) {
+        const tabs = useTabs()
+        const ui = useUi()
+        bridgeStops = [
+          watch(
+            () => tabs.activeId,
+            () => {
+              const t = tabs.active
+              emit('file-open', t ? { path: t.path, title: t.title } : null)
+            },
+          ),
+          watch(
+            () => ui.theme,
+            (theme) => emit('theme-change', theme),
+          ),
+        ]
+      }
 
       if (!this.supported) return
       try {
@@ -235,6 +240,14 @@ export const usePlugins = defineStore('plugins', {
         }
       }
       return false
+    },
+
+    /** 应用卸载时释放宿主监听与插件实例；不改变用户的启用设置。 */
+    dispose() {
+      for (const id of [...instances.keys()]) this.unload(id)
+      for (const stop of bridgeStops) stop()
+      bridgeStops = []
+      listeners.clear()
     },
   },
 })

@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { EditorState } from '@codemirror/state'
 import { createMockIpc, setIpc, type Ipc } from '../src/lib/ipc'
 import { editorRegistry } from '../src/lib/editorRegistry'
+import { isOpenablePath, isPlainTextPath } from '../src/lib/fileTypes'
 import { isMac, keyHint } from '../src/lib/shortcuts'
 import { BUILTIN_COMMANDS, useAi } from '../src/stores/ai'
 import { useTabs } from '../src/stores/tabs'
@@ -18,6 +19,7 @@ beforeEach(() => {
     '/ws/sub/deep.md': 'hello 深层\n',
     '/ws/Note-hello.md': '无关内容\n',
     '/ws/skip.txt': 'hello hello\n',
+    '/ws/custom.xyz': '冷门格式也能搜索\n',
   })
   setIpc(mock)
 })
@@ -30,26 +32,40 @@ function typeInto(tabId: string, doc: string) {
 
 describe('searchText 全文搜索（mock 与 Rust 同契约）', () => {
   it('内容匹配：大小写不敏感，统计次数、首行行号与预览', async () => {
-    const hits = await mock.searchText('/ws', 'HELLO', 50)
+    const hits = await mock.searchText('/ws', 'HELLO', 50, 1)
     const a = hits.find((h) => h.name === 'a.md')!
     expect(a.count).toBe(3) // Hello + hello + hello
     expect(a.line).toBe(1)
     expect(a.preview).toBe('# Hello World')
   })
 
-  it('排序：文件名命中优先，其余按命中次数降序；非 md 不参与', async () => {
-    const hits = await mock.searchText('/ws', 'hello', 50)
-    expect(hits.map((h) => h.name)).toEqual(['Note-hello.md', 'a.md', 'deep.md'])
+  it('排序：文件名命中优先，其余文本按命中次数降序', async () => {
+    const hits = await mock.searchText('/ws', 'hello', 50, 2)
+    expect(hits.map((h) => h.name)).toEqual(['Note-hello.md', 'a.md', 'skip.txt', 'deep.md'])
     // 仅文件名命中：line 0 / count 0
     expect(hits[0].line).toBe(0)
     expect(hits[0].count).toBe(0)
-    expect(hits.some((h) => h.name === 'skip.txt')).toBe(false)
+    expect(hits.find((h) => h.name === 'skip.txt')?.count).toBe(2)
   })
 
   it('作用域限定 root；空查询返回空；limit 生效', async () => {
-    expect(await mock.searchText('/elsewhere', 'hello', 50)).toEqual([])
-    expect(await mock.searchText('/ws', '   ', 50)).toEqual([])
-    expect(await mock.searchText('/ws', 'hello', 2)).toHaveLength(2)
+    expect(await mock.searchText('/elsewhere', 'hello', 50, 3)).toEqual([])
+    expect(await mock.searchText('/ws', '   ', 50, 4)).toEqual([])
+    expect(await mock.searchText('/ws', 'hello', 2, 5)).toHaveLength(2)
+  })
+
+  it('按内容识别的未知文本扩展也参与搜索', async () => {
+    const hits = await mock.searchText('/ws', '冷门格式', 50, 6)
+    expect(hits.map((hit) => hit.name)).toEqual(['custom.xyz'])
+  })
+})
+
+describe('文本文件能力规则', () => {
+  it('支持常见表格、配置、隐藏文本名与无扩展说明文件', () => {
+    for (const path of ['data.csv', 'config.toml', '.gitignore', '.env', 'LICENSE', 'Dockerfile']) {
+      expect(isPlainTextPath(path), path).toBe(true)
+      expect(isOpenablePath(path), path).toBe(true)
+    }
   })
 })
 

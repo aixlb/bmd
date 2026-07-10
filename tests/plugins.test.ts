@@ -1,5 +1,5 @@
 // 第三方插件运行时测试：manifest 校验、热键匹配、版本比较、装载/卸载与贡献点回收
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import {
   compareVersions,
@@ -12,6 +12,10 @@ import { usePlugins } from '../src/stores/plugins'
 beforeEach(() => {
   setActivePinia(createPinia())
   localStorage.clear()
+})
+
+afterEach(() => {
+  usePlugins().dispose()
 })
 
 describe('manifest 校验', () => {
@@ -129,5 +133,16 @@ describe('插件启停与贡献点回收', () => {
     const spy = vi.spyOn(Storage.prototype, 'setItem')
     await plugins.disable('nope')
     expect(spy).toHaveBeenCalledWith('bmd.plugins.enabled', '[]')
+  })
+
+  it('应用 dispose 会回收实例与宿主监听，但保留启用设置', async () => {
+    const plugins = usePlugins()
+    plugins.enabledIds = ['demo']
+    await plugins.init()
+    await plugins.loadFromSource(manifest, code)
+    plugins.dispose()
+    expect(plugins.ribbons).toHaveLength(0)
+    expect(plugins.commands).toHaveLength(0)
+    expect(plugins.enabledIds).toEqual(['demo'])
   })
 })

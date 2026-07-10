@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { EditorState } from '@codemirror/state'
 import { EditorView, type ViewUpdate } from '@codemirror/view'
-import { createBmdState, getOutline } from '@core/index'
+import { createBmdState, createPlainTextState, getOutline } from '@core/index'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { ipc, isTauri } from '@/lib/ipc'
 import { keyHint } from '@/lib/shortcuts'
@@ -18,6 +18,11 @@ let currentTabId: string | null = null
 let countTimer: ReturnType<typeof setTimeout> | null = null
 let outlineTimer: ReturnType<typeof setTimeout> | null = null
 const autosaveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+let stopActiveWatch: (() => void) | null = null
+
+function saveInBackground(tabId: string) {
+  void tabs.saveTab(tabId).catch((e) => console.error('[bmd] 自动保存失败', e))
+}
 
 function openLink(url: string) {
   if (!/^https?:\/\//.test(url)) return
@@ -29,9 +34,10 @@ function openLink(url: string) {
 }
 
 /** 相对路径图片基于文档目录解析；Tauri 下走 asset 协议 */
-function makeImageResolver(tabPath: string | null) {
+function makeImageResolver(tabId: string) {
   return (src: string): string => {
     if (/^(https?:|data:|asset:)/.test(src)) return src
+    const tabPath = tabs.tabs.find((tab) => tab.id === tabId)?.path ?? null
     if (!isTauri || !tabPath) return src
     const dir = tabPath.slice(0, Math.max(tabPath.lastIndexOf('/'), tabPath.lastIndexOf('\\')))
     const abs = /^([a-zA-Z]:[\\/]|\/)/.test(src) ? src : `${dir}/${src}`
@@ -55,7 +61,7 @@ function scheduleAutosave(tabId: string) {
       autosaveTimers.delete(tabId)
       const tab = tabs.tabs.find((t) => t.id === tabId)
       // 未命名文件不自动弹保存框（FR-22）
-      if (tab?.dirty && tab.path) void tabs.saveTab(tabId)
+      if (tab?.dirty && tab.path && !tab.preview) saveInBackground(tabId)
     }, 800),
   )
 }
@@ -89,9 +95,9 @@ function trackUpdate(tabId: string, update: ViewUpdate) {
 }
 
 /** 粘贴图片 → base64 → Rust 落盘 assets/，返回相对路径（FR-25/26） */
-function makePasteHandler(tabPath: string | null) {
+function makePasteHandler(tabId: string) {
   return async (file: File): Promise<string | null> => {
-    const path = tabPath ?? tabs.active?.path
+    const path = tabs.tabs.find((tab) => tab.id === tabId)?.path ?? null
     if (!path) return null // 未命名文件先保存才能贴图
     const buf = new Uint8Array(await file.arrayBuffer())
     let bin = ''
@@ -109,13 +115,14 @@ function makePasteHandler(tabPath: string | null) {
   }
 }
 
-function buildState(tabId: string, doc: string, tabPath: string | null): EditorState {
-  return createBmdState(doc, {
-    onViewUpdate: (u) => trackUpdate(tabId, u),
+function buildState(tabId: string, doc: string, kind: 'md' | 'text'): EditorState {
+  const config = {
+    onViewUpdate: (u: ViewUpdate) => trackUpdate(tabId, u),
     onOpenLink: openLink,
-    resolveImageSrc: makeImageResolver(tabPath),
-    onPasteImage: makePasteHandler(tabPath),
-  })
+    resolveImageSrc: makeImageResolver(tabId),
+    onPasteImage: makePasteHandler(tabId),
+  }
+  return kind === 'md' ? createBmdState(doc, config) : createPlainTextState(doc, config)
 }
 
 /** 活动标签为 HTML：只读 iframe 预览，不进编辑器（不支持编辑） */
@@ -130,10 +137,10 @@ function syncActive() {
   if (currentTabId && editorRegistry.get(currentTabId)) {
     editorRegistry.set(currentTabId, view.state)
     const prev = tabs.tabs.find((t) => t.id === currentTabId)
-    if (prev?.dirty && prev.path) void tabs.saveTab(currentTabId)
+    if (prev?.dirty && prev.path && !prev.preview) saveInBackground(currentTabId)
   }
   const tab = tabs.active
-  if (!tab || tab.kind !== 'md') {
+  if (!tab || (tab.kind !== 'md' && tab.kind !== 'text')) {
     currentTabId = null
     view.setState(EditorState.create({ doc: '' }))
     ui.outline = []
@@ -142,7 +149,7 @@ function syncActive() {
   }
   let state = editorRegistry.get(tab.id)
   if (!state) {
-    state = buildState(tab.id, tab.initialDoc ?? '', tab.path)
+    state = buildState(tab.id, tab.initialDoc ?? '', tab.kind)
     tab.initialDoc = null
     editorRegistry.set(tab.id, state)
   }
@@ -155,19 +162,29 @@ function syncActive() {
 
 function saveAllDirty() {
   for (const t of tabs.tabs) {
-    if (t.dirty && t.path) void tabs.saveTab(t.id)
+    if (t.dirty && t.path && !t.preview) saveInBackground(t.id)
   }
 }
 
 onMounted(() => {
   view = new EditorView({ parent: host.value! })
   editorRegistry.setActiveView(view)
-  watch(() => tabs.activeId, syncActive, { immediate: true })
+  stopActiveWatch = watch(
+    () => [tabs.activeId, tabs.active?.kind] as const,
+    syncActive,
+    { immediate: true },
+  )
   window.addEventListener('blur', saveAllDirty)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('blur', saveAllDirty)
+  stopActiveWatch?.()
+  stopActiveWatch = null
+  if (countTimer) clearTimeout(countTimer)
+  if (outlineTimer) clearTimeout(outlineTimer)
+  for (const timer of autosaveTimers.values()) clearTimeout(timer)
+  autosaveTimers.clear()
   editorRegistry.setActiveView(null)
   view?.destroy()
   view = null

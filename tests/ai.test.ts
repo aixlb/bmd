@@ -190,6 +190,27 @@ describe('AI 对话链路（M5）', () => {
     expect(saved.sessions[0].messages).toHaveLength(1)
   })
 
+  it('快速切换工作区时按任务快照保存旧根并加载目标根', async () => {
+    const ai = useAi()
+    useWorkspace().root = '/already-moved'
+    ai.sessions = [{ id: 'a', title: 'A 会话', messages: [] }]
+    ai.currentSessionId = 'a'
+    ai.restored = true
+    const saveSpy = vi.spyOn(mock, 'saveChats')
+    const loadSpy = vi.spyOn(mock, 'loadChats').mockImplementation(async (root) =>
+      JSON.stringify({
+        sessions: [{ id: 'b', title: `${root} 会话`, messages: [] }],
+        current: 'b',
+      }),
+    )
+
+    await ai.reloadForWorkspace('/workspace-a', '/workspace-b')
+
+    expect(saveSpy).toHaveBeenCalledWith('/workspace-a', expect.any(String))
+    expect(loadSpy).toHaveBeenCalledWith('/workspace-b')
+    expect(ai.current?.title).toBe('/workspace-b 会话')
+  })
+
   it('自定义 provider 增删与激活回退', () => {
     const ai = useAi()
     ai.customProviders.push({

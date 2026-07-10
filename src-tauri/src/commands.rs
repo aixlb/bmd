@@ -1,7 +1,12 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
+use chardetng::EncodingDetector;
+use encoding_rs::Encoding;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
@@ -12,6 +17,8 @@ pub struct Entry {
     pub path: String,
     pub is_dir: bool,
     pub is_md: bool,
+    /** 已知文本扩展或内容探测为文本；未知二进制为 false。 */
+    pub is_text: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -19,6 +26,7 @@ pub struct Entry {
 pub struct DocPayload {
     pub content: String,
     pub mtime_ms: u64,
+    pub encoding: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -39,11 +47,91 @@ fn mtime_ms(path: &Path) -> Result<u64, String> {
     Ok(mtime.duration_since(UNIX_EPOCH).map_err(err)?.as_millis() as u64)
 }
 
+fn lower_ext(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+}
+
+fn lower_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.to_ascii_lowercase())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileTypePolicy {
+    markdown_extensions: Vec<String>,
+    text_extensions: Vec<String>,
+    text_names: Vec<String>,
+    html_extensions: Vec<String>,
+    image_extensions: Vec<String>,
+}
+
+fn file_type_policy() -> &'static FileTypePolicy {
+    static POLICY: OnceLock<FileTypePolicy> = OnceLock::new();
+    POLICY.get_or_init(|| {
+        serde_json::from_str(include_str!("../../shared/file-types.json"))
+            .expect("shared/file-types.json 必须是合法策略")
+    })
+}
+
 fn is_markdown(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()),
-        Some(ref e) if e == "md" || e == "markdown"
-    )
+    lower_ext(path).is_some_and(|ext| file_type_policy().markdown_extensions.contains(&ext))
+}
+
+fn is_plain_text(path: &Path) -> bool {
+    lower_name(path).is_some_and(|name| file_type_policy().text_names.contains(&name))
+        || lower_ext(path).is_some_and(|ext| file_type_policy().text_extensions.contains(&ext))
+}
+
+fn is_html(path: &Path) -> bool {
+    lower_ext(path).is_some_and(|ext| file_type_policy().html_extensions.contains(&ext))
+}
+
+fn is_image(path: &Path) -> bool {
+    lower_ext(path).is_some_and(|ext| file_type_policy().image_extensions.contains(&ext))
+}
+
+pub(crate) fn is_known_text_path(path: &Path) -> bool {
+    is_markdown(path) || is_plain_text(path) || is_html(path)
+}
+
+fn looks_like_text(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+        return true;
+    }
+    if bytes.contains(&0) {
+        return false;
+    }
+    let controls = bytes
+        .iter()
+        .filter(|&&b| b < 0x09 || (b > 0x0D && b < 0x20))
+        .count();
+    controls * 100 <= bytes.len().max(1)
+}
+
+fn is_text_file(path: &Path) -> bool {
+    if is_known_text_path(path) {
+        return true;
+    }
+    if is_image(path) {
+        return false;
+    }
+    use std::io::Read;
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut sample = Vec::with_capacity(8192);
+    if file.take(8192).read_to_end(&mut sample).is_err() {
+        return false;
+    }
+    looks_like_text(&sample)
+}
+
+fn is_readable_text(path: &Path) -> bool {
+    is_known_text_path(path) || is_text_file(path)
 }
 
 fn require_abs(path: &str) -> Result<PathBuf, String> {
@@ -55,22 +143,31 @@ fn require_abs(path: &str) -> Result<PathBuf, String> {
 }
 
 /// 单层目录扫描：目录在前、文件在后，各自按名称排序（忽略大小写）。
-/// 隐藏文件（.开头）不返回。
+/// 未声明为文本的隐藏文件（.开头）不返回。
 #[tauri::command]
 pub async fn scan_dir(path: String) -> Result<Vec<Entry>, String> {
+    tauri::async_runtime::spawn_blocking(move || scan_dir_impl(path))
+        .await
+        .map_err(err)?
+}
+
+fn scan_dir_impl(path: String) -> Result<Vec<Entry>, String> {
     let dir = require_abs(&path)?;
     let mut entries: Vec<Entry> = fs::read_dir(&dir)
         .map_err(err)?
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                return None;
-            }
             let p = e.path();
             let is_dir = e.file_type().ok()?.is_dir();
+            let is_text = !is_dir && is_text_file(&p);
+            let known_hidden_text = !is_dir && is_known_text_path(&p);
+            if name.starts_with('.') && !known_hidden_text {
+                return None;
+            }
             Some(Entry {
                 is_md: !is_dir && is_markdown(&p),
+                is_text,
                 path: p.to_string_lossy().into_owned(),
                 name,
                 is_dir,
@@ -96,15 +193,69 @@ pub struct SearchHit {
     pub count: u32,
 }
 
-/// 工作区全文搜索（FR 侧栏搜索）：递归遍历 md/markdown 文件，
+#[derive(Default)]
+pub struct SearchState {
+    latest_requests: Arc<Mutex<HashMap<String, u64>>>,
+}
+
+fn register_search_request(latest: &Mutex<HashMap<String, u64>>, scope: &str, request_id: u64) {
+    let mut requests = latest.lock().unwrap();
+    let current = requests.entry(scope.to_owned()).or_default();
+    *current = (*current).max(request_id);
+}
+
+fn search_cancelled(latest: &Mutex<HashMap<String, u64>>, scope: &str, request_id: u64) -> bool {
+    latest
+        .lock()
+        .unwrap()
+        .get(scope)
+        .copied()
+        .unwrap_or_default()
+        > request_id
+}
+
+/// 工作区全文搜索（FR 侧栏搜索）：递归遍历 markdown 与常见文本文件，
 /// 大小写不敏感子串匹配文件名与内容。隐藏项跳过，>5MB 文件跳过。
 /// 排序：文件名命中优先，其次按内容命中次数降序。
 #[tauri::command]
 pub async fn search_text(
+    state: tauri::State<'_, SearchState>,
     root: String,
     query: String,
     limit: usize,
+    request_id: u64,
+    scope: String,
 ) -> Result<Vec<SearchHit>, String> {
+    register_search_request(&state.latest_requests, &scope, request_id);
+    let latest_requests = Arc::clone(&state.latest_requests);
+    tauri::async_runtime::spawn_blocking(move || {
+        search_text_impl(root, query, limit, request_id, scope, latest_requests)
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+pub async fn cancel_search(
+    state: tauri::State<'_, SearchState>,
+    request_id: u64,
+    scope: String,
+) -> Result<(), String> {
+    register_search_request(&state.latest_requests, &scope, request_id);
+    Ok(())
+}
+
+fn search_text_impl(
+    root: String,
+    query: String,
+    limit: usize,
+    request_id: u64,
+    scope: String,
+    latest_requests: Arc<Mutex<HashMap<String, u64>>>,
+) -> Result<Vec<SearchHit>, String> {
+    if search_cancelled(&latest_requests, &scope, request_id) {
+        return Ok(vec![]);
+    }
     let dir = require_abs(&root)?;
     let q = query.trim().to_lowercase();
     if q.is_empty() {
@@ -112,27 +263,40 @@ pub async fn search_text(
     }
     let mut hits: Vec<(bool, SearchHit)> = Vec::new();
     let mut stack = vec![dir];
-    'walk: while let Some(d) = stack.pop() {
+    while let Some(d) = stack.pop() {
+        if search_cancelled(&latest_requests, &scope, request_id) {
+            return Ok(vec![]);
+        }
         let Ok(rd) = fs::read_dir(&d) else { continue };
         for e in rd.filter_map(|e| e.ok()) {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                continue;
+            if search_cancelled(&latest_requests, &scope, request_id) {
+                return Ok(vec![]);
             }
+            let name = e.file_name().to_string_lossy().into_owned();
             let p = e.path();
             let Ok(ft) = e.file_type() else { continue };
+            let known_hidden_text = !ft.is_dir() && is_known_text_path(&p);
+            if name.starts_with('.') && !known_hidden_text {
+                continue;
+            }
             if ft.is_dir() {
                 stack.push(p);
                 continue;
             }
-            if !is_markdown(&p) {
+            if !is_readable_text(&p) {
                 continue;
             }
-            if fs::metadata(&p).map(|m| m.len() > 5 * 1024 * 1024).unwrap_or(true) {
+            if fs::metadata(&p)
+                .map(|m| m.len() > 5 * 1024 * 1024)
+                .unwrap_or(true)
+            {
                 continue;
             }
             let name_match = name.to_lowercase().contains(&q);
-            let Ok(content) = fs::read_to_string(&p) else { continue };
+            let Ok(bytes) = fs::read(&p) else { continue };
+            let Ok((content, _)) = decode_text(&bytes) else {
+                continue;
+            };
             let mut count = 0u32;
             let mut first: Option<(u32, String)> = None;
             for (i, line) in content.lines().enumerate() {
@@ -158,34 +322,168 @@ pub async fn search_text(
                         count,
                     },
                 ));
-                if hits.len() >= limit {
-                    break 'walk;
-                }
             }
         }
     }
     hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.count.cmp(&a.1.count)));
-    Ok(hits.into_iter().map(|(_, h)| h).collect())
+    Ok(hits.into_iter().take(limit).map(|(_, h)| h).collect())
+}
+
+fn decode_text(bytes: &[u8]) -> Result<(String, String), String> {
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        if !looks_like_text(rest) {
+            return Err("文件内容疑似二进制，已拒绝按文本打开".into());
+        }
+        return Ok((
+            String::from_utf8(rest.to_vec()).map_err(err)?,
+            "utf-8-bom".into(),
+        ));
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        if rest.len() % 2 != 0 {
+            return Err("UTF-16LE 文件字节数不完整".into());
+        }
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+        return Ok((String::from_utf16(&units).map_err(err)?, "utf-16le".into()));
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        if rest.len() % 2 != 0 {
+            return Err("UTF-16BE 文件字节数不完整".into());
+        }
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+            .collect();
+        return Ok((String::from_utf16(&units).map_err(err)?, "utf-16be".into()));
+    }
+    if !looks_like_text(bytes) {
+        return Err("文件内容疑似二进制，已拒绝按文本打开".into());
+    }
+    if let Ok(content) = std::str::from_utf8(bytes) {
+        return Ok((content.to_owned(), "utf-8".into()));
+    }
+
+    let mut detector = EncodingDetector::new();
+    detector.feed(bytes, true);
+    let encoding = detector.guess(None, false);
+    let (content, _, had_errors) = encoding.decode(bytes);
+    if had_errors {
+        return Err("无法可靠识别文本编码".into());
+    }
+    Ok((content.into_owned(), encoding.name().to_ascii_lowercase()))
+}
+
+fn encode_text(content: &str, encoding: &str) -> Result<Vec<u8>, String> {
+    match encoding.to_ascii_lowercase().as_str() {
+        "utf-8" => Ok(content.as_bytes().to_vec()),
+        "utf-8-bom" => {
+            let mut out = vec![0xEF, 0xBB, 0xBF];
+            out.extend_from_slice(content.as_bytes());
+            Ok(out)
+        }
+        "utf-16le" | "utf-16be" => {
+            let little = encoding.eq_ignore_ascii_case("utf-16le");
+            let mut out = if little {
+                vec![0xFF, 0xFE]
+            } else {
+                vec![0xFE, 0xFF]
+            };
+            for unit in content.encode_utf16() {
+                let encoded = if little {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                };
+                out.extend_from_slice(&encoded);
+            }
+            Ok(out)
+        }
+        label => {
+            let codec = Encoding::for_label(label.as_bytes())
+                .ok_or_else(|| format!("不支持的文本编码: {encoding}"))?;
+            let (bytes, _, had_errors) = codec.encode(content);
+            if had_errors {
+                return Err(format!(
+                    "内容包含 {encoding} 无法表示的字符，请另存为 UTF-8 文件"
+                ));
+            }
+            Ok(bytes.into_owned())
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, target: &Path) -> Result<(), String> {
+    fs::rename(source, target).map_err(err)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, target: &Path) -> Result<(), String> {
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(once(0)).collect();
+    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(once(0)).collect();
+    let moved = unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            target_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
 }
 
 #[tauri::command]
 pub async fn read_doc(path: String) -> Result<DocPayload, String> {
+    tauri::async_runtime::spawn_blocking(move || read_doc_impl(path))
+        .await
+        .map_err(err)?
+}
+
+fn read_doc_impl(path: String) -> Result<DocPayload, String> {
     let p = require_abs(&path)?;
-    let content = fs::read_to_string(&p).map_err(err)?;
+    let bytes = fs::read(&p).map_err(err)?;
+    let (content, encoding) = decode_text(&bytes)?;
     Ok(DocPayload {
         content,
         mtime_ms: mtime_ms(&p)?,
+        encoding,
     })
 }
 
-/// 原子写（DESIGN.md §5.1）：同目录临时文件 + fsync + rename。
+/// 原子写（DESIGN.md §2）：同目录临时文件 + fsync + rename。
 /// expected_mtime_ms 不匹配时返回 "conflict"，前端据此走冲突流程。
-/// 写入前登记到 watcher 自写忽略表（DESIGN.md §5.2）。
+/// 写入前登记到 watcher 自写忽略表（DESIGN.md §2）。
 #[tauri::command]
 pub async fn write_doc_atomic(
     path: String,
     content: String,
     expected_mtime_ms: Option<u64>,
+    encoding: Option<String>,
+) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        write_doc_atomic_impl(path, content, expected_mtime_ms, encoding)
+    })
+    .await
+    .map_err(err)?
+}
+
+fn write_doc_atomic_impl(
+    path: String,
+    content: String,
+    expected_mtime_ms: Option<u64>,
+    encoding: Option<String>,
 ) -> Result<u64, String> {
     let p = require_abs(&path)?;
     if let (Some(expected), true) = (expected_mtime_ms, p.exists()) {
@@ -194,16 +492,25 @@ pub async fn write_doc_atomic(
             return Err("conflict".into());
         }
     }
-    crate::watcher::register_self_write(&p);
-    // 追加而非替换扩展名：a.md 与 a.markdown 并发保存不共用同一临时文件
-    let tmp = crate::watcher::tmp_path_for(&p);
-    {
+    let bytes = encode_text(&content, encoding.as_deref().unwrap_or("utf-8"))?;
+    static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(1);
+    let tmp = crate::watcher::tmp_path_for(&p, SAVE_TMP_SEQ.fetch_add(1, Ordering::Relaxed));
+    crate::watcher::register_self_write(&tmp);
+    let result = (|| -> Result<(), String> {
         use std::io::Write;
         let mut f = fs::File::create(&tmp).map_err(err)?;
-        f.write_all(content.as_bytes()).map_err(err)?;
+        if let Ok(meta) = fs::metadata(&p) {
+            fs::set_permissions(&tmp, meta.permissions()).map_err(err)?;
+        }
+        f.write_all(&bytes).map_err(err)?;
         f.sync_all().map_err(err)?;
+        replace_file(&tmp, &p)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, &p).map_err(err)?;
+    result?;
     mtime_ms(&p)
 }
 
@@ -215,15 +522,15 @@ pub async fn save_pasted_image(
     ext: String,
 ) -> Result<String, String> {
     use base64::Engine;
-    if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp") {
+    if !matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp"
+    ) {
         return Err(format!("不支持的图片格式: {ext}"));
     }
     let doc = require_abs(&doc_path)?;
     let dir = doc.parent().ok_or("文档无父目录")?;
-    let stem = doc
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("images");
+    let stem = doc.file_stem().and_then(|s| s.to_str()).unwrap_or("images");
     let assets = dir.join("assets").join(stem);
     fs::create_dir_all(&assets).map_err(err)?;
 
@@ -331,10 +638,16 @@ pub fn read_image_b64_impl(path: &str) -> Result<(String, String), String> {
     let mime = crate::pdf::image_mime(path).ok_or("不支持的图片格式")?;
     let meta = fs::metadata(&p).map_err(err)?;
     if meta.len() > IMAGE_ATTACH_MAX {
-        return Err(format!("图片过大（{:.1}MB），上限 8MB", meta.len() as f64 / 1048576.0));
+        return Err(format!(
+            "图片过大（{:.1}MB），上限 8MB",
+            meta.len() as f64 / 1048576.0
+        ));
     }
     let bytes = fs::read(&p).map_err(err)?;
-    Ok((mime.to_string(), base64::engine::general_purpose::STANDARD.encode(bytes)))
+    Ok((
+        mime.to_string(),
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+    ))
 }
 
 #[derive(Serialize)]
@@ -347,7 +660,10 @@ pub struct ImageB64 {
 #[tauri::command]
 pub async fn read_image_b64(path: String) -> Result<ImageB64, String> {
     let (media_type, data_b64) = read_image_b64_impl(&path)?;
-    Ok(ImageB64 { media_type, data_b64 })
+    Ok(ImageB64 {
+        media_type,
+        data_b64,
+    })
 }
 
 /// AI 工具路径约束（DESIGN docs/AI-TOOLS-DESIGN.md §7）：path（相对工作区或绝对）
@@ -406,21 +722,52 @@ mod tests {
         let path = file.to_string_lossy().into_owned();
 
         // 初次写入（无期望 mtime）
-        let m1 = block(write_doc_atomic(path.clone(), "v1".into(), None)).unwrap();
+        let m1 = block(write_doc_atomic(path.clone(), "v1".into(), None, None)).unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "v1");
 
         // 带正确 mtime 的写入成功
-        let m2 = block(write_doc_atomic(path.clone(), "v2".into(), Some(m1))).unwrap();
+        let m2 = block(write_doc_atomic(path.clone(), "v2".into(), Some(m1), None)).unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "v2");
 
         // 模拟外部修改后，旧 mtime 写入必须冲突
         fs::write(&file, "external").unwrap();
-        let e = block(write_doc_atomic(path.clone(), "v3".into(), Some(m2))).unwrap_err();
+        let e = block(write_doc_atomic(path.clone(), "v3".into(), Some(m2), None)).unwrap_err();
         assert_eq!(e, "conflict");
         assert_eq!(fs::read_to_string(&file).unwrap(), "external");
 
         // 临时文件不残留
-        assert!(!file.with_extension("bmd.tmp").exists());
+        assert!(!fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().contains(".bmd-")));
+    }
+
+    #[test]
+    fn text_encoding_roundtrip() {
+        for encoding in ["utf-8-bom", "utf-16le", "utf-16be", "gbk"] {
+            let bytes = encode_text("中文 ABC", encoding).unwrap();
+            let (decoded, detected) = decode_text(&bytes).unwrap();
+            assert_eq!(decoded, "中文 ABC");
+            if encoding.starts_with("utf-") {
+                assert_eq!(detected, encoding);
+            } else {
+                assert!(!detected.is_empty());
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("utf16.txt");
+        let path = file.to_string_lossy().into_owned();
+        block(write_doc_atomic(
+            path.clone(),
+            "保存原编码".into(),
+            None,
+            Some("utf-16le".into()),
+        ))
+        .unwrap();
+        let payload = block(read_doc(path)).unwrap();
+        assert_eq!(payload.content, "保存原编码");
+        assert_eq!(payload.encoding, "utf-16le");
     }
 
     #[test]
@@ -431,12 +778,40 @@ mod tests {
         fs::write(dir.path().join("A.markdown"), "").unwrap();
         fs::write(dir.path().join("c.txt"), "").unwrap();
         fs::write(dir.path().join(".hidden"), "").unwrap();
+        fs::write(dir.path().join(".gitignore"), "target\n").unwrap();
+        fs::write(dir.path().join("notes.weird"), "冷门扩展也是文本").unwrap();
+        fs::write(dir.path().join("blob.bin"), [0, 1, 2, 3]).unwrap();
 
         let entries = block(scan_dir(dir.path().to_string_lossy().into_owned())).unwrap();
         let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["zdir", "A.markdown", "b.md", "c.txt"]);
+        assert_eq!(
+            names,
+            [
+                "zdir",
+                ".gitignore",
+                "A.markdown",
+                "b.md",
+                "blob.bin",
+                "c.txt",
+                "notes.weird"
+            ]
+        );
         assert!(entries[0].is_dir && !entries[0].is_md);
-        assert!(entries[1].is_md && entries[2].is_md && !entries[3].is_md);
+        assert!(entries[2].is_md && entries[3].is_md && !entries[4].is_md);
+        assert!(
+            entries
+                .iter()
+                .find(|e| e.name == "notes.weird")
+                .unwrap()
+                .is_text
+        );
+        assert!(
+            !entries
+                .iter()
+                .find(|e| e.name == "blob.bin")
+                .unwrap()
+                .is_text
+        );
     }
 
     #[test]
@@ -450,10 +825,22 @@ mod tests {
         fs::write(dir.path().join("skip.txt"), "hello hello").unwrap();
         fs::write(dir.path().join(".hidden.md"), "hello").unwrap();
 
-        // 大小写不敏感；文件名命中优先，其余按命中次数降序；txt / 隐藏文件不参与
-        let hits = block(search_text(root.clone(), "HELLO".into(), 50)).unwrap();
+        // 大小写不敏感；文件名命中优先，其余文本按命中次数降序；已知文本类型的隐藏文件可参与
+        let latest = Arc::new(Mutex::new(HashMap::new()));
+        let hits = search_text_impl(
+            root.clone(),
+            "HELLO".into(),
+            50,
+            1,
+            "test".into(),
+            Arc::clone(&latest),
+        )
+        .unwrap();
         let names: Vec<_> = hits.iter().map(|h| h.name.as_str()).collect();
-        assert_eq!(names, ["note-hello.md", "a.md", "deep.md"]);
+        assert_eq!(
+            names,
+            ["note-hello.md", "a.md", "skip.txt", ".hidden.md", "deep.md"]
+        );
 
         let a = hits.iter().find(|h| h.name == "a.md").unwrap();
         assert_eq!((a.count, a.line), (3, 1));
@@ -462,8 +849,35 @@ mod tests {
         assert_eq!((hits[0].line, hits[0].count), (0, 0));
 
         // 空白查询返回空；limit 截断
-        assert!(block(search_text(root.clone(), "  ".into(), 50)).unwrap().is_empty());
-        assert_eq!(block(search_text(root, "hello".into(), 1)).unwrap().len(), 1);
+        assert!(search_text_impl(
+            root.clone(),
+            "  ".into(),
+            50,
+            2,
+            "test".into(),
+            Arc::clone(&latest),
+        )
+        .unwrap()
+        .is_empty());
+        assert_eq!(
+            search_text_impl(root, "hello".into(), 1, 3, "test".into(), latest)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let cancelled = Arc::new(Mutex::new(HashMap::new()));
+        register_search_request(&cancelled, "test", 8);
+        assert!(search_text_impl(
+            dir.path().to_string_lossy().into_owned(),
+            "hello".into(),
+            50,
+            7,
+            "test".into(),
+            cancelled,
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]
@@ -476,7 +890,9 @@ mod tests {
         assert_eq!(mime, "image/png");
         use base64::Engine;
         assert_eq!(
-            base64::engine::general_purpose::STANDARD.decode(&b64).unwrap()[..4],
+            base64::engine::general_purpose::STANDARD
+                .decode(&b64)
+                .unwrap()[..4],
             [0x89, b'P', b'N', b'G']
         );
         // 非图片扩展拒绝

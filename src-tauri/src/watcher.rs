@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::{AppHandle, Emitter, State};
 
-// 外部变更监听（DESIGN.md §5.2）：notify 递归监听工作区根目录，
+// 外部变更监听（DESIGN.md §4）：notify 递归监听工作区根目录，
 // 事件经 400ms 静默期去抖后发前端 "fs-changed"；自身写入经忽略表过滤。
 
 const SELF_WRITE_TTL: Duration = Duration::from_millis(2000);
@@ -17,23 +17,24 @@ fn self_writes() -> &'static Mutex<HashMap<PathBuf, Instant>> {
     M.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// write_doc_atomic 的临时文件名（与 commands.rs 保持一致：追加而非替换扩展名）
-pub fn tmp_path_for(path: &Path) -> PathBuf {
+/// write_doc_atomic 的唯一隐藏临时文件名；同一文档并发请求也不会共用文件。
+pub fn tmp_path_for(path: &Path, nonce: u64) -> PathBuf {
     let name = format!(
-        "{}.bmd.tmp",
-        path.file_name().map(|s| s.to_string_lossy()).unwrap_or_default()
+        ".{}.bmd-{}-{nonce}.tmp",
+        path.file_name()
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_default(),
+        std::process::id(),
     );
     path.with_file_name(name)
 }
 
-/// write_doc_atomic 调用：登记即将发生的自身写入
-pub fn register_self_write(path: &Path) {
+/// 只忽略临时文件事件；目标文件事件交给前端按 mtime 去重，避免吞掉紧随其后的外部修改。
+pub fn register_self_write(temp_path: &Path) {
     let mut map = self_writes().lock().unwrap();
     let now = Instant::now();
     map.retain(|_, t| now.duration_since(*t) < SELF_WRITE_TTL);
-    map.insert(path.to_path_buf(), now);
-    // 临时文件与目标同视为自写
-    map.insert(tmp_path_for(path), now);
+    map.insert(temp_path.to_path_buf(), now);
 }
 
 /// 事件路径是否应因「自身写入」而忽略（含 TTL 清理）
@@ -58,6 +59,27 @@ fn pending() -> &'static Mutex<Pending> {
     })
 }
 
+fn should_ignore_hidden_path(root: &Path, path: &Path) -> bool {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let mut components = relative.components().peekable();
+
+    while let Some(component) = components.next() {
+        let Some(name) = component.as_os_str().to_str() else {
+            continue;
+        };
+        if !name.starts_with('.') {
+            continue;
+        }
+
+        let is_file_name = components.peek().is_none();
+        if !is_file_name || !crate::commands::is_known_text_path(path) {
+            return true;
+        }
+    }
+
+    false
+}
+
 #[derive(Default)]
 pub struct WatchState(Mutex<Option<RecommendedWatcher>>);
 
@@ -72,21 +94,21 @@ pub async fn start_watch(
         return Err(format!("不是目录: {path}"));
     }
 
+    let watched_root = root.clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
             let now = Instant::now();
             let mut p = pending().lock().unwrap();
+            let mut changed = false;
             for path in event.paths {
-                // 隐藏文件与自写事件不上报
-                let hidden = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with('.'));
-                if !hidden && !should_ignore(&path, now) {
-                    p.paths.insert(path);
+                // 已知隐藏文本文件可正常刷新；隐藏目录与原子写临时文件不上报。
+                if !should_ignore_hidden_path(&watched_root, &path) && !should_ignore(&path, now) {
+                    changed |= p.paths.insert(path);
                 }
             }
-            p.last = now;
+            if changed {
+                p.last = now;
+            }
         }
     })
     .map_err(|e| e.to_string())?;
@@ -95,6 +117,7 @@ pub async fn start_watch(
         .watch(&root, RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
     *state.0.lock().unwrap() = Some(watcher);
+    pending().lock().unwrap().paths.clear();
 
     // 去抖发射线程（幂等启动一次）
     static EMITTER: OnceLock<()> = OnceLock::new();
@@ -121,6 +144,7 @@ pub async fn start_watch(
 #[tauri::command]
 pub async fn stop_watch(state: State<'_, WatchState>) -> Result<(), String> {
     *state.0.lock().unwrap() = None;
+    pending().lock().unwrap().paths.clear();
     Ok(())
 }
 
@@ -130,28 +154,54 @@ mod tests {
 
     #[test]
     fn self_write_ignore_with_ttl() {
-        let p = PathBuf::from("/tmp/x.md");
-        register_self_write(&p);
-        assert!(should_ignore(&p, Instant::now()));
-        assert!(should_ignore(
-            &PathBuf::from("/tmp/x.md.bmd.tmp"),
+        let target = PathBuf::from("/tmp/x.md");
+        let temp = tmp_path_for(&target, 1);
+        register_self_write(&temp);
+        assert!(!should_ignore(&target, Instant::now()));
+        assert!(should_ignore(&temp, Instant::now()));
+        assert!(!should_ignore(
+            &PathBuf::from("/tmp/other.md"),
             Instant::now()
         ));
-        assert!(!should_ignore(&PathBuf::from("/tmp/other.md"), Instant::now()));
         // TTL 过期后不再忽略
-        assert!(!should_ignore(&p, Instant::now() + SELF_WRITE_TTL * 2));
+        assert!(!should_ignore(&temp, Instant::now() + SELF_WRITE_TTL * 2));
     }
 
     #[test]
     fn tmp_path_appends_extension() {
         assert_eq!(
-            tmp_path_for(Path::new("/a/b.md")),
-            PathBuf::from("/a/b.md.bmd.tmp")
+            tmp_path_for(Path::new("/a/b.md"), 7),
+            PathBuf::from(format!("/a/.b.md.bmd-{}-7.tmp", std::process::id()))
         );
         // a.md 与 a.markdown 不再碰撞
         assert_ne!(
-            tmp_path_for(Path::new("/a/x.md")),
-            tmp_path_for(Path::new("/a/x.markdown"))
+            tmp_path_for(Path::new("/a/x.md"), 1),
+            tmp_path_for(Path::new("/a/x.md"), 2)
         );
+    }
+
+    #[test]
+    fn hidden_text_files_are_watched_without_exposing_hidden_directories() {
+        let root = Path::new("/workspace");
+        assert!(!should_ignore_hidden_path(
+            root,
+            Path::new("/workspace/.gitignore")
+        ));
+        assert!(!should_ignore_hidden_path(
+            root,
+            Path::new("/workspace/notes/.draft.md")
+        ));
+        assert!(should_ignore_hidden_path(
+            root,
+            Path::new("/workspace/.git/index")
+        ));
+        assert!(should_ignore_hidden_path(
+            root,
+            Path::new("/workspace/.cache/README.md")
+        ));
+        assert!(should_ignore_hidden_path(
+            root,
+            Path::new("/workspace/.unknown")
+        ));
     }
 }

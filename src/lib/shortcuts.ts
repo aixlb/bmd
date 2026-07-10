@@ -4,27 +4,20 @@ import { onBeforeUnmount, onMounted } from 'vue'
 import { toggleSourceMode } from '@core/index'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { ipc } from '@/lib/ipc'
+import { isMac } from '@/lib/platform'
 import { useAi } from '@/stores/ai'
+import { useFiles } from '@/stores/files'
 import { usePlugins } from '@/stores/plugins'
 import { useTabs } from '@/stores/tabs'
 import { useUi } from '@/stores/ui'
 import { useWorkspace } from '@/stores/workspace'
 
-export const isMac = navigator.platform.toUpperCase().includes('MAC')
-
-/** 平台化快捷键提示：mac 显示 ⌘⇧ 符号，其他平台转成 Ctrl+Shift+X */
-export function keyHint(macHint: string): string {
-  if (isMac) return macHint
-  return macHint
-    .replace(/⌘/g, 'Ctrl+')
-    .replace(/⇧/g, 'Shift+')
-    .replace(/⌥/g, 'Alt+')
-    .replace(/⌃/g, 'Ctrl+')
-}
+export { isMac, keyHint } from '@/lib/platform'
 
 export function useShortcuts() {
   const ai = useAi()
   const plugins = usePlugins()
+  const files = useFiles()
   const tabs = useTabs()
   const ui = useUi()
   const workspace = useWorkspace()
@@ -80,7 +73,7 @@ export function useShortcuts() {
           await workspace.openFolder()
         } else {
           const path = await ipc().pickFile()
-          if (path) await tabs.openFile(path)
+          if (path) await files.openPath(path)
         }
         break
       }
@@ -99,6 +92,7 @@ export function useShortcuts() {
         break
       case '/': {
         e.preventDefault()
+        if (tabs.active?.kind !== 'md') return
         const v = editorRegistry.getActiveView()
         if (v) toggleSourceMode(v)
         break

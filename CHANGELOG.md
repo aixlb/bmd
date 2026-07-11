@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.6 · 2026-07-11
+
+### 变更
+
+- macOS Apple Silicon 与 Intel 发布包改用 `Developer ID Application` 正式签名，提交 Apple 公证并装订离线票据；Gatekeeper 可验证开发者与公证状态，不再依赖用户手动绕过“无法验证开发者”提示
+
 ## v1.0.5 · 2026-07-11
 
 ### 修复

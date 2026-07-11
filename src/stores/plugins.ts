@@ -4,6 +4,7 @@
 //   见 CLAUDE.md「插件 API 文档同步」。
 import { defineStore } from 'pinia'
 import { watch } from 'vue'
+import packageMetadata from '../../package.json'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { isTauri } from '@/lib/ipc'
 import {
@@ -25,7 +26,7 @@ import { isMac } from '@/lib/platform'
 import { useTabs } from '@/stores/tabs'
 import { useUi } from '@/stores/ui'
 
-export const APP_VERSION = '1.0.3'
+export const APP_VERSION = packageMetadata.version
 
 export interface InstalledPlugin {
   manifest: PluginManifest

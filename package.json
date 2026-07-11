@@ -1,14 +1,15 @@
 {
   "name": "bmd",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "bmd (Bao Markdown) — WYSIWYG markdown editor",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "check:version": "node scripts/check-version.mjs",
+    "build": "npm run check:version && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "npm run check:version && vitest run",
     "test:watch": "vitest",
     "tauri": "tauri"
   },

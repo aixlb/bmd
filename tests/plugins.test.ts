@@ -9,7 +9,8 @@ import {
   validateManifest,
 } from '../src/lib/pluginApi'
 import { createMockIpc, setIpc } from '../src/lib/ipc'
-import { usePlugins } from '../src/stores/plugins'
+import packageMetadata from '../package.json'
+import { APP_VERSION, usePlugins } from '../src/stores/plugins'
 import { useTabs } from '../src/stores/tabs'
 
 beforeEach(() => {
@@ -38,6 +39,10 @@ describe('manifest 校验', () => {
 })
 
 describe('版本比较', () => {
+  it('宿主版本自动跟随发布版本', () => {
+    expect(APP_VERSION).toBe(packageMetadata.version)
+  })
+
   it('语义化比较', () => {
     expect(compareVersions('1.0.1', '1.0.1')).toBe(0)
     expect(compareVersions('1.0.0', '1.0.1')).toBe(-1)

@@ -77,6 +77,35 @@ describe('workspace 文件树', () => {
     expect(ws.expanded).toEqual({})
     expect(ws.filter).toBe('')
   })
+
+  it('快速切换文件夹：较慢的旧扫描不能覆盖新根或重新监听旧目录', async () => {
+    const ws = useWorkspace()
+    const scan = mock.scanDir.bind(mock)
+    let releaseSlow!: () => void
+    let startedSlow!: () => void
+    const gate = new Promise<void>((resolve) => (releaseSlow = resolve))
+    const entered = new Promise<void>((resolve) => (startedSlow = resolve))
+    mock.scanDir = vi.fn(async (path) => {
+      if (path === '/slow') {
+        startedSlow()
+        await gate
+      }
+      return path === '/slow' ? [] : scan(path)
+    })
+    const startWatch = vi.fn(async () => {})
+    mock.startWatch = startWatch
+
+    const slow = ws.openFolder('/slow')
+    await entered
+    await ws.openFolder('/ws')
+    releaseSlow()
+    await slow
+
+    expect(ws.root).toBe('/ws')
+    expect(ws.rootEntries.map((entry) => entry.name)).toContain('a.md')
+    expect(startWatch).toHaveBeenCalledTimes(1)
+    expect(startWatch).toHaveBeenCalledWith('/ws')
+  })
 })
 
 describe('tabs 打开/保存链路', () => {
@@ -114,6 +143,21 @@ describe('tabs 打开/保存链路', () => {
     ])
   })
 
+  it('预览槽复用同类型文件：清除旧编辑器状态并发出内容重建信号', async () => {
+    const tabs = useTabs()
+    const a = await tabs.previewFile('/ws/a.md')
+    editorRegistry.set(a.id, EditorState.create({ doc: '# A\n' }))
+    const firstEditorVersion = a.editorVersion
+
+    const b = await tabs.previewFile('/ws/b.md')
+
+    expect(b.id).toBe(a.id)
+    expect(b.kind).toBe('md')
+    expect(b.editorVersion).toBe(firstEditorVersion + 1)
+    expect(editorRegistry.get(b.id)).toBeUndefined()
+    expect(b.initialDoc).toBe('bbb\n')
+  })
+
   it('预览被编辑后切换文件：确认保存后转正式标签，再打开新的预览', async () => {
     const tabs = useTabs()
     const a = await tabs.previewFile('/ws/a.md')
@@ -143,6 +187,20 @@ describe('tabs 打开/保存链路', () => {
     expect(tabs.active?.preview).toBe(true)
     expect(tabs.active?.dirty).toBe(true)
     expect((await mock.readDoc('/ws/a.md')).content).toBe('# A\n')
+  })
+
+  it('预览被编辑后新建文件：取消保存则不离开当前预览', async () => {
+    const tabs = useTabs()
+    const preview = await tabs.previewFile('/ws/a.md')
+    typeInto(preview.id, '# 未保存修改')
+    mock.confirm = vi.fn(async () => false)
+
+    const stayed = await tabs.newFile()
+
+    expect(stayed.id).toBe(preview.id)
+    expect(tabs.tabs).toHaveLength(1)
+    expect(tabs.activeId).toBe(preview.id)
+    expect(preview.dirty).toBe(true)
   })
 
   it('预览被编辑后切换文件：选择不保存则丢弃修改并轮播到新预览', async () => {
@@ -261,6 +319,67 @@ describe('tabs 打开/保存链路', () => {
     expect(tabs.active?.path).toBe('/ws/sub/c.md')
   })
 
+  it('快速正式打开：较慢的旧读取可后台打开，但不能抢走最新文件焦点', async () => {
+    const tabs = useTabs()
+    const read = mock.readDoc.bind(mock)
+    let releaseA!: () => void
+    let releaseB!: () => void
+    let startedA!: () => void
+    let startedB!: () => void
+    const gateA = new Promise<void>((resolve) => (releaseA = resolve))
+    const gateB = new Promise<void>((resolve) => (releaseB = resolve))
+    const enteredA = new Promise<void>((resolve) => (startedA = resolve))
+    const enteredB = new Promise<void>((resolve) => (startedB = resolve))
+    mock.readDoc = async (path) => {
+      if (path === '/ws/a.md') {
+        startedA()
+        await gateA
+      }
+      if (path === '/ws/b.md') {
+        startedB()
+        await gateB
+      }
+      return read(path)
+    }
+
+    const older = tabs.openFile('/ws/a.md')
+    await enteredA
+    const newer = tabs.openFile('/ws/b.md')
+    await enteredB
+    releaseB()
+    await newer
+    releaseA()
+    await older
+
+    expect(tabs.tabs.map((tab) => tab.path)).toEqual(['/ws/b.md', '/ws/a.md'])
+    expect(tabs.active?.path).toBe('/ws/b.md')
+  })
+
+  it('新建文件会取消尚未完成的预览抢焦点', async () => {
+    const tabs = useTabs()
+    const read = mock.readDoc.bind(mock)
+    let release!: () => void
+    let started!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const entered = new Promise<void>((resolve) => (started = resolve))
+    mock.readDoc = async (path) => {
+      if (path === '/ws/a.md') {
+        started()
+        await gate
+      }
+      return read(path)
+    }
+
+    const previewing = tabs.previewFile('/ws/a.md')
+    await entered
+    const draft = await tabs.newFile()
+    release()
+    await previewing
+
+    expect(tabs.activeId).toBe(draft.id)
+    expect(tabs.tabs).toEqual([draft])
+  })
+
   it('过期预览读取失败：不覆盖新预览，也不冒出无关错误', async () => {
     const tabs = useTabs()
     await tabs.previewFile('/ws/a.md')
@@ -309,13 +428,28 @@ describe('tabs 打开/保存链路', () => {
 
   it('新建文件：首次保存走另存对话框', async () => {
     const tabs = useTabs()
-    const t = tabs.newFile()
+    const t = await tabs.newFile()
     typeInto(t.id, '草稿')
     mock.pickSavePath = vi.fn(async () => '/ws/draft.md')
     expect(await tabs.saveTab(t.id)).toBe(true)
     expect(t.path).toBe('/ws/draft.md')
     expect(t.title).toBe('draft.md')
     expect((await mock.readDoc('/ws/draft.md')).content).toBe('草稿')
+  })
+
+  it('另存为已打开文件时拒绝制造两个同路径编辑器', async () => {
+    const tabs = useTabs()
+    await tabs.openFile('/ws/a.md')
+    const draft = await tabs.newFile()
+    typeInto(draft.id, '不能覆盖另一个标签')
+    mock.pickSavePath = vi.fn(async () => '/ws/a.md')
+    const write = vi.spyOn(mock, 'writeDocAtomic')
+
+    expect(await tabs.saveTab(draft.id, { saveAs: true })).toBe(false)
+    expect(draft.path).toBeNull()
+    expect(draft.dirty).toBe(true)
+    expect(write).not.toHaveBeenCalled()
+    expect((await mock.readDoc('/ws/a.md')).content).toBe('# A\n')
   })
 
   it('关闭 dirty 标签需确认；拒绝则保留', async () => {
@@ -465,6 +599,21 @@ describe('文件系统事务', () => {
     mock.confirm = vi.fn(async () => true)
     expect(await files.trashEntry('/ws/sub', true, 'sub')).toBe(true)
     expect(tabs.tabs).toHaveLength(0)
+  })
+
+  it('删除含未保存修改的文件时明确警告会丢失修改', async () => {
+    const tabs = useTabs()
+    const files = useFiles()
+    const tab = await tabs.openFile('/ws/a.md')
+    typeInto(tab.id, '尚未保存')
+    mock.confirm = vi.fn(async () => false)
+
+    expect(await files.trashEntry('/ws/a.md', false, 'a.md')).toBe(false)
+    expect(mock.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('1 个打开文件有未保存修改'),
+      '删除',
+    )
+    expect(tabs.tabs.some((item) => item.id === tab.id)).toBe(true)
   })
 
   it('删除前的在途保存失败：中止删除并保留文件与标签', async () => {

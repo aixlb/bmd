@@ -1,17 +1,22 @@
 // 第三方插件运行时测试：manifest 校验、热键匹配、版本比较、装载/卸载与贡献点回收
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { nextTick } from 'vue'
 import {
   compareVersions,
   loadPluginModule,
   matchHotkey,
   validateManifest,
 } from '../src/lib/pluginApi'
+import { createMockIpc, setIpc } from '../src/lib/ipc'
 import { usePlugins } from '../src/stores/plugins'
+import { useTabs } from '../src/stores/tabs'
 
 beforeEach(() => {
   setActivePinia(createPinia())
   localStorage.clear()
+  setIpc(createMockIpc({ '/ws/a.md': '# A', '/ws/b.md': '# B' }))
+  delete (globalThis as Record<string, unknown>).__openedFiles
 })
 
 afterEach(() => {
@@ -144,5 +149,25 @@ describe('插件启停与贡献点回收', () => {
     expect(plugins.ribbons).toHaveLength(0)
     expect(plugins.commands).toHaveLength(0)
     expect(plugins.enabledIds).toEqual(['demo'])
+  })
+
+  it('预览标签复用同一 ID 换文件时仍派发 file-open', async () => {
+    const plugins = usePlugins()
+    await plugins.loadFromSource(
+      manifest,
+      `module.exports = { onload(app) { app.on('file-open', (file) => {
+        globalThis.__openedFiles = [...(globalThis.__openedFiles || []), file && file.title]
+      }) } }`,
+    )
+    await plugins.init()
+    const tabs = useTabs()
+
+    const first = await tabs.previewFile('/ws/a.md')
+    await nextTick()
+    const second = await tabs.previewFile('/ws/b.md')
+    await nextTick()
+
+    expect(second.id).toBe(first.id)
+    expect((globalThis as Record<string, unknown>).__openedFiles).toEqual(['a.md', 'b.md'])
   })
 })

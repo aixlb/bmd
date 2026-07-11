@@ -18,6 +18,7 @@ const listEl = ref<HTMLElement | null>(null)
 const resizing = ref(false)
 const mentionOpen = ref(false)
 const mentionFiles = ref<string[]>([])
+let mentionRequestSeq = 0
 const activeDocLabel = computed(() => {
   const t = tabs.active
   if (!t) return '无文档'
@@ -30,6 +31,9 @@ const activeDocLabel = computed(() => {
 
 const diff = reactive({
   visible: false,
+  tabId: null as string | null,
+  revision: 0,
+  editorVersion: 0,
   original: '',
   proposed: '',
   from: 0,
@@ -72,10 +76,17 @@ function onListScroll() {
   stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM
 }
 
+function scrollListToBottom() {
+  const el = listEl.value
+  if (!el) return
+  if (typeof el.scrollTo === 'function') el.scrollTo({ top: el.scrollHeight })
+  else el.scrollTop = el.scrollHeight
+}
+
 async function scrollToBottom() {
   stickToBottom.value = true
   await nextTick()
-  listEl.value?.scrollTo({ top: listEl.value.scrollHeight })
+  scrollListToBottom()
 }
 
 watch(
@@ -83,7 +94,7 @@ watch(
   async () => {
     if (!stickToBottom.value) return
     await nextTick()
-    listEl.value?.scrollTo({ top: listEl.value.scrollHeight })
+    scrollListToBottom()
   },
 )
 
@@ -107,6 +118,7 @@ function startResize(e: PointerEvent) {
 
 /** 插入光标处（单事务，可一次撤销） */
 function applyInsert(text: string) {
+  if (tabs.active?.kind !== 'md' && tabs.active?.kind !== 'text') return
   const view = editorRegistry.getActiveView()
   if (!view) return
   const pos = view.state.selection.main.to
@@ -119,6 +131,8 @@ function applyInsert(text: string) {
 
 /** 替换选区：先 diff 预览（FR-41） */
 function applyReplace(text: string) {
+  const tab = tabs.active
+  if (!tab || (tab.kind !== 'md' && tab.kind !== 'text')) return
   const view = editorRegistry.getActiveView()
   if (!view) return
   const sel = view.state.selection.main
@@ -128,14 +142,24 @@ function applyReplace(text: string) {
   }
   diff.original = view.state.doc.sliceString(sel.from, sel.to)
   diff.proposed = text
+  diff.tabId = tab.id
+  diff.revision = tab.revision
+  diff.editorVersion = tab.editorVersion
   diff.from = sel.from
   diff.to = sel.to
   diff.visible = true
 }
 
 function confirmReplace() {
-  const view = editorRegistry.getActiveView()
   diff.visible = false
+  const tab = tabs.active
+  if (!tab || (tab.kind !== 'md' && tab.kind !== 'text')) return
+  if (
+    tab.id !== diff.tabId ||
+    tab.revision !== diff.revision ||
+    tab.editorVersion !== diff.editorVersion
+  ) return
+  const view = editorRegistry.getActiveView()
   if (!view) return
   view.dispatch({
     changes: { from: diff.from, to: diff.to, insert: diff.proposed },
@@ -150,8 +174,18 @@ function closeSession(id: string) {
 }
 
 async function toggleMention() {
-  mentionOpen.value = !mentionOpen.value
-  if (mentionOpen.value) mentionFiles.value = await workspace.collectAllText()
+  if (mentionOpen.value) {
+    mentionOpen.value = false
+    mentionRequestSeq++
+    return
+  }
+  mentionOpen.value = true
+  const requestId = ++mentionRequestSeq
+  const root = workspace.root
+  const collected = await workspace.collectAllText()
+  if (requestId === mentionRequestSeq && mentionOpen.value && root === workspace.root) {
+    mentionFiles.value = collected
+  }
 }
 
 function toggleMentionFile(path: string) {
@@ -172,7 +206,17 @@ onMounted(() => {
   window.addEventListener('bmd:ai-selection', onAiSelection)
 })
 
+watch(
+  () => workspace.root,
+  () => {
+    mentionRequestSeq++
+    mentionOpen.value = false
+    mentionFiles.value = []
+  },
+)
+
 onUnmounted(() => {
+  mentionRequestSeq++
   window.removeEventListener('bmd:ai-selection', onAiSelection)
 })
 </script>

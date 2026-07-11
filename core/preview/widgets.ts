@@ -1,4 +1,5 @@
 import { EditorView, WidgetType } from '@codemirror/view'
+import { writeClipboard } from '../clipboard'
 import { currentTheme, renderKatex, renderMermaid } from '../render/lazy'
 
 /** 点击块级 widget → 光标进入其源码（触发 reveal） */
@@ -106,30 +107,6 @@ export function serializeTable(model: TableModel): string {
     .map((a) => (a === 'center' ? ':---:' : a === 'right' ? '---:' : '---'))
     .join(' | ')
   return [row(model.header), `| ${delim} |`, ...model.rows.map(row)].join('\n')
-}
-
-async function writeClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-      return true
-    }
-  } catch {
-    // 继续走 textarea 兜底
-  }
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.style.position = 'fixed'
-  textarea.style.left = '-9999px'
-  textarea.style.top = '0'
-  document.body.appendChild(textarea)
-  textarea.focus()
-  textarea.select()
-  try {
-    return document.execCommand('copy')
-  } finally {
-    textarea.remove()
-  }
 }
 
 /** 表格就地编辑 widget（FR-11b，M4）：contentEditable 单元格 + Tab 跳格 + 增删行列 */

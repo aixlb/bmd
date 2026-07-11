@@ -9,6 +9,7 @@ import {
   WidgetType,
 } from '@codemirror/view'
 import type { SyntaxNode, Tree } from '@lezer/common'
+import { writeClipboard } from '../clipboard'
 
 // ---------------------------------------------------------------------------
 // reveal-on-cursor 装饰引擎（DESIGN.md §3.3）——行内与行级（不影响纵向布局）部分。
@@ -99,10 +100,9 @@ class CopyButtonWidget extends WidgetType {
     btn.className = 'bmd-copy-btn'
     btn.type = 'button'
     btn.textContent = '复制'
-    btn.addEventListener('mousedown', (e) => {
+    btn.addEventListener('mousedown', async (e) => {
       e.preventDefault()
-      void navigator.clipboard?.writeText(this.code)
-      btn.textContent = '已复制'
+      btn.textContent = (await writeClipboard(this.code)) ? '已复制' : '复制失败'
       setTimeout(() => (btn.textContent = '复制'), 1200)
     })
     return btn

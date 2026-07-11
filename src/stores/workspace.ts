@@ -5,6 +5,14 @@ import { ipc, type Entry } from '@/lib/ipc'
 export type FileSortMode = 'type' | 'nameAsc' | 'nameDesc'
 
 const SORT_KEY = 'bmd.fileSort'
+let workspaceRequestSeq = 0
+let watcherTransition: Promise<void> = Promise.resolve()
+
+function enqueueWatcherTransition(task: () => Promise<void>): Promise<void> {
+  const next = watcherTransition.catch(() => {}).then(task)
+  watcherTransition = next
+  return next
+}
 
 function initialSortMode(): FileSortMode {
   const saved = localStorage.getItem(SORT_KEY)
@@ -42,52 +50,73 @@ export const useWorkspace = defineStore('workspace', {
     },
 
     async openFolder(path?: string) {
+      const requestId = ++workspaceRequestSeq
       const target = path ?? (await ipc().pickFolder())
-      if (!target) return
-      const prev = this.root
-      if (prev && prev !== target) {
-        try {
-          await ipc().stopWatch()
-        } catch {
-          // 旧监听不存在或停止失败时继续切换；新监听会在下方重建
-        }
-      }
-      this.root = target
-      this.children = {}
-      this.expanded = {}
-      this.filter = ''
-      await this.ensureChildren(target)
-      // 外部变更监听（FR-05）
+      if (!target || requestId !== workspaceRequestSeq) return false
+
+      let entries: Entry[]
       try {
-        await ipc().startWatch(target)
-      } catch (e) {
-        console.warn('[bmd] 目录监听启动失败', e)
+        entries = await ipc().scanDir(target)
+      } catch {
+        entries = []
       }
+      if (requestId !== workspaceRequestSeq) return false
+
+      await enqueueWatcherTransition(async () => {
+        if (requestId !== workspaceRequestSeq) return
+        const prev = this.root
+        if (prev && prev !== target) {
+          try {
+            await ipc().stopWatch()
+          } catch {
+            // 旧监听不存在或停止失败时继续切换；新监听会在下方重建
+          }
+        }
+        if (requestId !== workspaceRequestSeq) return
+        this.root = target
+        this.children = { [target]: entries }
+        this.expanded = {}
+        this.filter = ''
+        try {
+          await ipc().startWatch(target)
+        } catch (e) {
+          console.warn('[bmd] 目录监听启动失败', e)
+        }
+      })
+      return requestId === workspaceRequestSeq && this.root === target
     },
 
     /** 进入无工作区的单文件模式：左侧不再展示上次打开的文件夹 */
     async clear() {
-      const prev = this.root
-      if (prev) {
-        try {
-          await ipc().stopWatch()
-        } catch {
-          // 没有活动监听时忽略
+      const requestId = ++workspaceRequestSeq
+      await enqueueWatcherTransition(async () => {
+        if (requestId !== workspaceRequestSeq) return
+        if (this.root) {
+          try {
+            await ipc().stopWatch()
+          } catch {
+            // 没有活动监听时忽略
+          }
         }
-      }
-      this.root = null
-      this.children = {}
-      this.expanded = {}
-      this.filter = ''
+        if (requestId !== workspaceRequestSeq) return
+        this.root = null
+        this.children = {}
+        this.expanded = {}
+        this.filter = ''
+      })
     },
 
     async ensureChildren(dir: string) {
       if (this.children[dir]) return
+      const requestId = workspaceRequestSeq
+      const root = this.root
+      let entries: Entry[]
       try {
-        this.children[dir] = await ipc().scanDir(dir)
+        entries = await ipc().scanDir(dir)
       } catch {
-        this.children[dir] = []
+        entries = []
       }
+      if (requestId === workspaceRequestSeq && root === this.root) this.children[dir] = entries
     },
 
     async toggleDir(dir: string) {
@@ -121,16 +150,23 @@ export const useWorkspace = defineStore('workspace', {
 
     /** 重扫已加载的目录（外部变更/手动刷新） */
     async refresh() {
+      const requestId = workspaceRequestSeq
+      const root = this.root
       const dirs = Object.keys(this.children)
-      await Promise.all(
+      const results = await Promise.all(
         dirs.map(async (d) => {
           try {
-            this.children[d] = await ipc().scanDir(d)
+            return [d, await ipc().scanDir(d)] as const
           } catch {
-            delete this.children[d]
+            return [d, null] as const
           }
         }),
       )
+      if (requestId !== workspaceRequestSeq || root !== this.root) return
+      for (const [dir, entries] of results) {
+        if (entries) this.children[dir] = entries
+        else delete this.children[dir]
+      }
     },
   },
 })

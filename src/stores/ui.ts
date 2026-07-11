@@ -12,14 +12,21 @@ function initialTheme(): Theme {
     : 'light'
 }
 
+function storedNumber(key: string, fallback: number, min: number, max: number): number {
+  const raw = localStorage.getItem(key)
+  if (raw === null || raw.trim() === '') return fallback
+  const value = Number(raw)
+  return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback
+}
+
 export const useUi = defineStore('ui', {
   state: () => ({
     sidebarVisible: localStorage.getItem('bmd.sidebar') !== 'off',
     sidebarWidth: 260,
     sidebarView: 'files' as 'files' | 'outline',
     theme: initialTheme(),
-    fontSize: Number(localStorage.getItem('bmd.fontSize')) || 16,
-    lineWidth: Number(localStorage.getItem('bmd.lineWidth')) || 760,
+    fontSize: storedNumber('bmd.fontSize', 16, 12, 24),
+    lineWidth: storedNumber('bmd.lineWidth', 760, 560, 1200),
     autosaveEnabled: localStorage.getItem('bmd.autosave') !== 'off',
     settingsVisible: false,
     quickOpenVisible: false,

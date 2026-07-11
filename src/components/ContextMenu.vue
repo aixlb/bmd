@@ -27,9 +27,10 @@ const choice = reactive({
 })
 
 function showMenu(x: number, y: number, items: MenuItem[]) {
+  const margin = 8
   state.items = items
-  state.x = Math.min(x, window.innerWidth - 180)
-  state.y = Math.min(y, window.innerHeight - items.length * 34 - 16)
+  state.x = Math.max(margin, Math.min(x, window.innerWidth - 180 - margin))
+  state.y = Math.max(margin, Math.min(y, window.innerHeight - items.length * 34 - margin))
   state.visible = true
 }
 
@@ -74,6 +75,13 @@ function hide() {
   state.visible = false
 }
 
+function runItem(item: MenuItem) {
+  state.visible = false
+  void Promise.resolve(item.action()).catch((error) =>
+    console.error('[bmd] 菜单操作失败', error),
+  )
+}
+
 defineExpose({ showMenu, askText, askChoice })
 
 onMounted(() => {
@@ -102,12 +110,7 @@ onBeforeUnmount(() => {
         v-for="(item, i) in state.items"
         :key="i"
         :class="{ danger: item.danger }"
-        @click="
-          () => {
-            state.visible = false
-            void item.action()
-          }
-        "
+        @click="runItem(item)"
       >
         {{ item.label }}
       </button>

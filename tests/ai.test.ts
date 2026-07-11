@@ -124,6 +124,25 @@ describe('AI 对话链路（M5）', () => {
     await p
   })
 
+  it('后端取消命令失败时仍立即停止本地流式状态', async () => {
+    const ai = useAi()
+    const session = ai.newSession()
+    session.busy = true
+    session.requestId = 'req-fail'
+    session.messages.push({ role: 'assistant', content: '半截', streaming: true })
+    mock.aiCancel = vi.fn(async () => {
+      throw new Error('cancel unavailable')
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await ai.stop(session.id)
+
+    expect(session.busy).toBe(false)
+    expect(session.requestId).toBeNull()
+    expect(session.messages[0].streaming).toBe(false)
+    warn.mockRestore()
+  })
+
   it('多会话并行提问：busy 按会话隔离，互不阻塞', async () => {
     const ai = useAi()
     // 每次 aiChat 挂起，等待测试手动派发事件
@@ -209,6 +228,68 @@ describe('AI 对话链路（M5）', () => {
     expect(saveSpy).toHaveBeenCalledWith('/workspace-a', expect.any(String))
     expect(loadSpy).toHaveBeenCalledWith('/workspace-b')
     expect(ai.current?.title).toBe('/workspace-b 会话')
+  })
+
+  it('工作区切换会停止旧请求、清空旧引用，且不会把旧会话写入新根', async () => {
+    const ws = useWorkspace()
+    ws.root = '/workspace-a'
+    const ai = useAi()
+    ai.restored = true
+    ai.mentionFiles = ['/workspace-a/a.md']
+    ai.newSession()
+    let finishChat!: () => void
+    let chatStarted!: () => void
+    const entered = new Promise<void>((resolve) => (chatStarted = resolve))
+    mock.aiChat = vi.fn(async () => {
+      chatStarted()
+      await new Promise<void>((resolve) => (finishChat = resolve))
+    })
+    mock.aiCancel = vi.fn(async () => finishChat())
+    const saveSpy = vi.spyOn(mock, 'saveChats')
+
+    const sending = ai.send('旧工作区问题')
+    await entered
+    ws.root = '/workspace-b'
+    await ai.reloadForWorkspace('/workspace-a', '/workspace-b')
+    await sending
+
+    expect(mock.aiCancel).toHaveBeenCalledOnce()
+    expect(ai.mentionFiles).toEqual([])
+    expect(saveSpy.mock.calls.some(([root]) => root === '/workspace-b')).toBe(false)
+    expect(saveSpy.mock.calls.some(([root]) => root === '/workspace-a')).toBe(true)
+  })
+
+  it('启动时较慢的全局会话恢复不能覆盖随后完成的工作区会话', async () => {
+    const ws = useWorkspace()
+    const ai = useAi()
+    let releaseGlobal!: () => void
+    let startedGlobal!: () => void
+    const gate = new Promise<void>((resolve) => (releaseGlobal = resolve))
+    const entered = new Promise<void>((resolve) => (startedGlobal = resolve))
+    mock.loadChats = vi.fn(async (root) => {
+      if (root === '__global__') {
+        startedGlobal()
+        await gate
+        return JSON.stringify({
+          sessions: [{ id: 'global', title: '全局旧会话', messages: [] }],
+          current: 'global',
+        })
+      }
+      return JSON.stringify({
+        sessions: [{ id: 'workspace', title: '工作区会话', messages: [] }],
+        current: 'workspace',
+      })
+    })
+
+    const initialRestore = ai.restore()
+    await entered
+    ws.root = '/workspace-b'
+    await ai.reloadForWorkspace(null, '/workspace-b')
+    releaseGlobal()
+    await initialRestore
+
+    expect(ai.currentSessionId).toBe('workspace')
+    expect(ai.current?.title).toBe('工作区会话')
   })
 
   it('自定义 provider 增删与激活回退', () => {
@@ -331,6 +412,31 @@ describe('工具调用（Agent 循环，P1）', () => {
     expect(callCount).toBe(9) // 8 轮带工具 + 1 轮强制作答
     expect(ai.current!.messages[1].steps).toHaveLength(8)
     expect(ai.current!.messages[1].content).toBe('基于已有信息作答。')
+  })
+
+  it('生成过程中切换模型不会让同一次 Agent 循环中途换端点', async () => {
+    const ai = useAi()
+    useWorkspace().root = '/ws'
+    const providers: string[] = []
+    mock.aiChat = vi.fn(async (req, onEvent: (e: AiEvent) => void) => {
+      providers.push(req.provider.id)
+      if (providers.length === 1) {
+        ai.selectProvider('deepseek')
+        onEvent({
+          type: 'toolCalls',
+          calls: [{ id: 'ls', name: 'list_files', arguments: '{}' }],
+        })
+      } else {
+        onEvent({ type: 'delta', text: '完成' })
+      }
+      onEvent({ type: 'done' })
+    })
+    ai.newSession()
+
+    await ai.send('查看工作区')
+
+    expect(providers).toEqual(['claude', 'claude'])
+    expect(ai.activeProviderId).toBe('deepseek')
   })
 
   it('识图附件：仅当前轮携带图片，历史不重发，落盘剥离为张数', async () => {

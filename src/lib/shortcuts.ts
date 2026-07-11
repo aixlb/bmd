@@ -4,6 +4,7 @@ import { onBeforeUnmount, onMounted } from 'vue'
 import { toggleSourceMode } from '@core/index'
 import { editorRegistry } from '@/lib/editorRegistry'
 import { ipc } from '@/lib/ipc'
+import { menu } from '@/lib/menuBus'
 import { isMac } from '@/lib/platform'
 import { useAi } from '@/stores/ai'
 import { useFiles } from '@/stores/files'
@@ -60,12 +61,23 @@ export function useShortcuts() {
         break
       case 's':
         e.preventDefault()
-        if (tabs.activeId) await tabs.saveTab(tabs.activeId, { saveAs: e.shiftKey })
+        if (tabs.activeId) {
+          try {
+            await tabs.saveTab(tabs.activeId, { saveAs: e.shiftKey })
+          } catch (error) {
+            console.error('[bmd] 保存文件失败', error)
+            await menu()?.askChoice(
+              '保存文件失败',
+              error instanceof Error ? error.message : String(error),
+              [{ value: 'ok', label: '知道了', primary: true }],
+            )
+          }
+        }
         break
       case 'n':
         if (e.shiftKey) return
         e.preventDefault()
-        tabs.newFile()
+        await tabs.newFile()
         break
       case 'o': {
         e.preventDefault()

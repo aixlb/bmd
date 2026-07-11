@@ -83,8 +83,12 @@ export const useFiles = defineStore('files', {
     },
 
     async trashEntry(path: string, isDir: boolean, name: string): Promise<boolean> {
-      if (!(await ipc().confirm(`把「${name}」移入回收站？`, '删除'))) return false
       const tabs = useTabs()
+      const dirtyCount = tabs.tabsForPath(path, isDir).filter((tab) => tab.dirty).length
+      const warning = dirtyCount
+        ? `\n其中 ${dirtyCount} 个打开文件有未保存修改，删除后这些修改会一并丢失。`
+        : ''
+      if (!(await ipc().confirm(`把「${name}」移入回收站？${warning}`, '删除'))) return false
       try {
         // 等待已经开始的保存，避免删除完成后旧保存又把文件写回来。
         if (!(await tabs.awaitPathSaves(path, isDir))) {

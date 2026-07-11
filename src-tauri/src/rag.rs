@@ -442,7 +442,7 @@ pub async fn rag_search(
         let with_vec: Vec<&ChunkRow> = rows.iter().filter(|r| r.3.is_some()).collect();
         if !with_vec.is_empty() {
             // 嵌入服务可能返回空 data；release 下 panic=abort，必须判空回退 BM25
-            if let Ok(qvs) = embed_texts(cfg, &[query.clone()]).await {
+            if let Ok(qvs) = embed_texts(cfg, std::slice::from_ref(&query)).await {
                 if let Some(qv) = qvs.first() {
                     let mut scored: Vec<(usize, f32)> = with_vec
                         .iter()
@@ -513,12 +513,12 @@ mod tests {
 
     #[test]
     fn bm25_ranks_relevant_chinese_doc_first() {
-        let docs = vec![
+        let docs = [
             "今天天气很好，适合出门散步。",
             "数据库索引的设计要点：主键、外键与查询计划。",
             "午餐吃了牛肉面。",
         ];
-        let ranked = bm25_rank("数据库索引怎么设计", &docs.iter().map(|s| *s).collect::<Vec<_>>(), 3);
+        let ranked = bm25_rank("数据库索引怎么设计", &docs, 3);
         assert_eq!(ranked[0].0, 1);
     }
 

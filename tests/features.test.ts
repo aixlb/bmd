@@ -8,12 +8,14 @@ import { isOpenablePath, isPlainTextPath } from '../src/lib/fileTypes'
 import { isMac, keyHint } from '../src/lib/shortcuts'
 import { BUILTIN_COMMANDS, useAi } from '../src/stores/ai'
 import { useTabs } from '../src/stores/tabs'
+import { useUi } from '../src/stores/ui'
 
 let mock: Ipc
 
 beforeEach(() => {
   setActivePinia(createPinia())
   editorRegistry.clear()
+  localStorage.clear()
   mock = createMockIpc({
     '/ws/a.md': '# Hello World\nsay hello, hello!\n',
     '/ws/sub/deep.md': 'hello 深层\n',
@@ -69,10 +71,37 @@ describe('文本文件能力规则', () => {
   })
 })
 
+describe('本地设置容错', () => {
+  it('没有持久化设置时使用设计默认值', () => {
+    const ui = useUi()
+    const ai = useAi()
+    expect(ui.fontSize).toBe(16)
+    expect(ui.lineWidth).toBe(760)
+    expect(ai.panelWidth).toBe(360)
+  })
+
+  it('越界或损坏的布局设置会回到安全范围', () => {
+    localStorage.setItem('bmd.fontSize', '999')
+    localStorage.setItem('bmd.lineWidth', 'bad')
+    localStorage.setItem('bmd.ai.width', '-20')
+    localStorage.setItem('bmd.ai.providers', '{}')
+    localStorage.setItem('bmd.ai.commands', '[null]')
+    setActivePinia(createPinia())
+
+    const ui = useUi()
+    const ai = useAi()
+    expect(ui.fontSize).toBe(24)
+    expect(ui.lineWidth).toBe(760)
+    expect(ai.panelWidth).toBe(280)
+    expect(ai.customProviders).toEqual([])
+    expect(ai.customCommands).toEqual([])
+  })
+})
+
 describe('新建文件关闭策略（FR：未编辑不弹确认）', () => {
   it('新建未编辑：dirty=false，关闭不询问直接移除', async () => {
     const tabs = useTabs()
-    const t = tabs.newFile()
+    const t = await tabs.newFile()
     expect(t.dirty).toBe(false)
     mock.confirm = vi.fn(async () => false)
     expect(await tabs.closeTab(t.id)).toBe(true)
@@ -82,7 +111,7 @@ describe('新建文件关闭策略（FR：未编辑不弹确认）', () => {
 
   it('新建后编辑过：关闭需确认，拒绝则保留', async () => {
     const tabs = useTabs()
-    const t = tabs.newFile()
+    const t = await tabs.newFile()
     typeInto(t.id, '草稿')
     expect(t.dirty).toBe(true)
     mock.confirm = vi.fn(async () => false)

@@ -89,7 +89,7 @@ export const usePlugins = defineStore('plugins', {
         const ui = useUi()
         bridgeStops = [
           watch(
-            () => tabs.activeId,
+            () => [tabs.activeId, tabs.active?.path, tabs.active?.title] as const,
             () => {
               const t = tabs.active
               emit('file-open', t ? { path: t.path, title: t.title } : null)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watchEffect } from 'vue'
+import { writeClipboard } from '@core/clipboard'
 import { renderChatMarkdown } from '@/lib/mdlite'
 import type { ChatMsg } from '@/stores/ai'
 
@@ -18,7 +19,7 @@ watchEffect(() => {
 })
 
 function copy(text: string) {
-  void navigator.clipboard.writeText(text)
+  void writeClipboard(text)
 }
 
 const TOOL_LABELS: Record<string, string> = {

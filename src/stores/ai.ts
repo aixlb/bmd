@@ -124,7 +124,18 @@ export const TOOL_DEFS: AiToolDef[] = [
 
 function loadCustomProviders(): AiProvider[] {
   try {
-    return JSON.parse(localStorage.getItem('bmd.ai.providers') ?? '[]')
+    const value = JSON.parse(localStorage.getItem('bmd.ai.providers') ?? '[]') as unknown
+    if (!Array.isArray(value)) return []
+    return value.filter(
+      (item): item is AiProvider =>
+        !!item &&
+        typeof item === 'object' &&
+        typeof item.id === 'string' &&
+        typeof item.name === 'string' &&
+        (item.protocol === 'anthropic' || item.protocol === 'openai') &&
+        typeof item.baseUrl === 'string' &&
+        typeof item.model === 'string',
+    )
   } catch {
     return []
   }
@@ -132,19 +143,56 @@ function loadCustomProviders(): AiProvider[] {
 
 function loadCustomCommands(): QuickCommand[] {
   try {
-    return JSON.parse(localStorage.getItem('bmd.ai.commands') ?? '[]')
+    const value = JSON.parse(localStorage.getItem('bmd.ai.commands') ?? '[]') as unknown
+    if (!Array.isArray(value)) return []
+    return value.filter(
+      (item): item is QuickCommand =>
+        !!item &&
+        typeof item === 'object' &&
+        typeof item.id === 'string' &&
+        typeof item.label === 'string' &&
+        typeof item.prompt === 'string',
+    )
   } catch {
     return []
   }
 }
 
+function storedPanelWidth(): number {
+  const raw = localStorage.getItem('bmd.ai.width')
+  if (raw === null || raw.trim() === '') return 360
+  const value = Number(raw)
+  return Number.isFinite(value) ? Math.min(520, Math.max(280, value)) : 360
+}
+
+function loadEmbedConfig(): EmbedConfig | null {
+  try {
+    const value = JSON.parse(localStorage.getItem('bmd.ai.embed') ?? 'null') as unknown
+    if (value === null) return null
+    if (
+      typeof value === 'object' &&
+      typeof (value as EmbedConfig).providerId === 'string' &&
+      typeof (value as EmbedConfig).baseUrl === 'string' &&
+      typeof (value as EmbedConfig).model === 'string'
+    ) {
+      return value as EmbedConfig
+    }
+  } catch {
+    // 配置损坏时回退 BM25，避免整个应用启动失败。
+  }
+  return null
+}
+
 let seq = 0
+let ragIndexRequestSeq = 0
+let chatLoadRequestSeq = 0
+let chatWorkspaceReloading = false
 const nextId = (p: string) => `${p}-${Date.now().toString(36)}-${++seq}`
 
 export const useAi = defineStore('ai', {
   state: () => ({
     panelVisible: false,
-    panelWidth: Number(localStorage.getItem('bmd.ai.width')) || 360,
+    panelWidth: storedPanelWidth(),
     customProviders: loadCustomProviders(),
     activeProviderId: localStorage.getItem('bmd.ai.provider') ?? 'claude',
     customCommands: loadCustomCommands(),
@@ -160,9 +208,11 @@ export const useAi = defineStore('ai', {
     // ---- RAG（M6/FR-39） ----
     ragEnabled: localStorage.getItem('bmd.ai.rag') === 'on',
     /** 嵌入模型配置；null = BM25 词法兜底 */
-    embed: JSON.parse(localStorage.getItem('bmd.ai.embed') ?? 'null') as EmbedConfig | null,
+    embed: loadEmbedConfig(),
     ragIndexing: false,
     ragIndexed: false,
+    ragIndexingRoot: null as string | null,
+    ragIndexedRoot: null as string | null,
     /** 工具调用（Agent）：默认开，设置里可关（bmd.ai.tools=off） */
     toolsEnabled: localStorage.getItem('bmd.ai.tools') !== 'off',
     /** 待发送的识图附件（随下一条消息发出后清空） */
@@ -225,19 +275,30 @@ export const useAi = defineStore('ai', {
 
     deleteSession(id: string) {
       const target = this.sessions.find((s) => s.id === id)
-      if (target?.requestId) void ipc().aiCancel(target.requestId)
+      if (target) {
+        if (target.requestId) {
+          void ipc().aiCancel(target.requestId).catch((e) => console.warn('[bmd] 取消 AI 请求失败', e))
+        }
+        for (const message of target.messages) {
+          if (message.streaming) message.streaming = false
+        }
+        target.busy = false
+        target.requestId = null
+      }
       this.sessions = this.sessions.filter((s) => s.id !== id)
       if (this.currentSessionId === id) this.currentSessionId = this.sessions[0]?.id ?? null
-      void this.persist()
+      void this.persist().catch((e) => console.warn('[bmd] 保存 AI 会话失败', e))
     },
 
     async restore(rootOverride?: string | null) {
-      if (this.restored) return
+      if (this.restored || chatWorkspaceReloading) return
+      const requestId = ++chatLoadRequestSeq
       this.restored = true
       const ws = useWorkspace()
       const root = rootOverride === undefined ? ws.root : rootOverride
       try {
         const raw = await ipc().loadChats(root ?? '__global__')
+        if (requestId !== chatLoadRequestSeq) return
         const data = JSON.parse(raw)
         if (Array.isArray(data?.sessions)) {
           // 剥离历史数据里可能残留的运行时字段
@@ -273,18 +334,40 @@ export const useAi = defineStore('ai', {
 
     /** 工作区切换（FR 修复 #7）：会话按旧根落盘，再按新根恢复，避免串档 */
     async reloadForWorkspace(prevRoot: string | null, nextRoot: string | null) {
-      // 旧工作区进行中的请求全部取消
+      chatWorkspaceReloading = true
+      chatLoadRequestSeq++
+      ragIndexRequestSeq++
+      this.ragIndexing = false
+      this.ragIndexed = false
+      this.ragIndexingRoot = null
+      this.ragIndexedRoot = null
+      this.mentionFiles = []
+
+      // 旧工作区进行中的请求全部停止并等待取消命令送达，防止其继续执行工具或串写新工作区。
+      const requestIds: string[] = []
       for (const s of this.sessions) {
-        if (s.requestId) void ipc().aiCancel(s.requestId)
+        if (s.requestId) requestIds.push(s.requestId)
+        for (const message of s.messages) {
+          if (message.streaming) message.streaming = false
+        }
         s.busy = false
         s.requestId = null
       }
-      if (this.restored) {
-        await this.persist(prevRoot)
+      try {
+        await Promise.allSettled(requestIds.map((id) => ipc().aiCancel(id)))
+        if (this.restored) {
+          try {
+            await this.persist(prevRoot)
+          } catch (e) {
+            console.warn('[bmd] 切换工作区前保存旧会话失败', e)
+          }
+        }
+        this.sessions = []
+        this.currentSessionId = null
+        this.restored = false
+      } finally {
+        chatWorkspaceReloading = false
       }
-      this.sessions = []
-      this.currentSessionId = null
-      this.restored = false
       await this.restore(nextRoot)
       if (!this.sessions.length) this.newSession()
     },
@@ -292,7 +375,13 @@ export const useAi = defineStore('ai', {
     async toggleRag() {
       this.ragEnabled = !this.ragEnabled
       localStorage.setItem('bmd.ai.rag', this.ragEnabled ? 'on' : 'off')
-      if (this.ragEnabled) await this.ensureIndex()
+      if (this.ragEnabled) {
+        await this.ensureIndex()
+      } else {
+        ragIndexRequestSeq++
+        this.ragIndexing = false
+        this.ragIndexingRoot = null
+      }
     },
 
     toggleTools() {
@@ -326,22 +415,38 @@ export const useAi = defineStore('ai', {
     },
 
     setEmbed(cfg: EmbedConfig | null) {
+      ragIndexRequestSeq++
       this.embed = cfg
       localStorage.setItem('bmd.ai.embed', JSON.stringify(cfg))
       this.ragIndexed = false
+      this.ragIndexing = false
+      this.ragIndexedRoot = null
+      this.ragIndexingRoot = null
     },
 
     async ensureIndex(force = false) {
       const ws = useWorkspace()
-      if (!ws.root || this.ragIndexing || (this.ragIndexed && !force)) return
+      const root = ws.root
+      if (!root) return
+      if (this.ragIndexing && this.ragIndexingRoot === root) return
+      if (this.ragIndexed && this.ragIndexedRoot === root && !force) return
+      const requestId = ++ragIndexRequestSeq
       this.ragIndexing = true
+      this.ragIndexingRoot = root
+      this.ragIndexed = false
       try {
-        await ipc().ragIndex(ws.root, this.embed)
-        this.ragIndexed = true
+        await ipc().ragIndex(root, this.embed)
+        if (requestId === ragIndexRequestSeq && useWorkspace().root === root) {
+          this.ragIndexed = true
+          this.ragIndexedRoot = root
+        }
       } catch (e) {
         console.warn('[bmd] RAG 索引失败', e)
       } finally {
-        this.ragIndexing = false
+        if (requestId === ragIndexRequestSeq) {
+          this.ragIndexing = false
+          this.ragIndexingRoot = null
+        }
       }
     },
 
@@ -388,12 +493,14 @@ export const useAi = defineStore('ai', {
       // RAG 检索片段（FR-39）；来源挂在发起请求的会话上
       if (session) session.sources = []
       const ws = useWorkspace()
-      if (this.ragEnabled && ws.root && query && budget > 500) {
+      const root = ws.root
+      const activePath = tabs.active?.path
+      if (this.ragEnabled && root && query && budget > 500) {
         await this.ensureIndex()
+        if (useWorkspace().root !== root) return parts.join('\n\n')
         try {
-          const hits = await ipc().ragSearch(ws.root, query, this.embed, 6)
-          const active = tabs.active?.path
-          const usable = hits.filter((h) => h.path !== active)
+          const hits = await ipc().ragSearch(root, query, this.embed, 6)
+          const usable = hits.filter((h) => h.path !== activePath)
           if (usable.length) {
             if (session) session.sources = usable
             const block = usable
@@ -410,9 +517,11 @@ export const useAi = defineStore('ai', {
     },
 
     /** 执行一次模型发起的工具调用；路径一律经 canonInRoot 约束在工作区内 */
-    async executeTool(call: AiToolCall): Promise<string> {
+    async executeTool(call: AiToolCall, expectedRoot?: string | null): Promise<string> {
       const ws = useWorkspace()
-      if (!ws.root) throw new Error('未打开工作区')
+      const root = expectedRoot === undefined ? ws.root : expectedRoot
+      if (!root) throw new Error('未打开工作区')
+      if (expectedRoot !== undefined && ws.root !== root) throw new Error('工作区已切换，工具调用已取消')
       let args: Record<string, unknown> = {}
       try {
         args = JSON.parse(call.arguments || '{}')
@@ -422,7 +531,7 @@ export const useAi = defineStore('ai', {
       const api = ipc()
       if (call.name === 'list_files') {
         const dirArg = typeof args.dir === 'string' ? args.dir.replace(/\\/g, '/').replace(/^\.\/?|\/+$/g, '') : ''
-        const target = await api.canonInRoot(ws.root, dirArg || '.')
+        const target = await api.canonInRoot(root, dirArg || '.')
         const entries = await api.scanDir(target)
         const label = dirArg || '（工作区根）'
         if (!entries.length) return `目录 ${label} 为空`
@@ -440,7 +549,7 @@ export const useAi = defineStore('ai', {
         if (typeof args.path !== 'string' || !args.path) throw new Error('缺少 path 参数')
         let p: string
         try {
-          p = await api.canonInRoot(ws.root, args.path)
+          p = await api.canonInRoot(root, args.path)
         } catch (e) {
           throw new Error(`${e instanceof Error ? e.message : e}（提示：先用 list_files 确认确切路径）`)
         }
@@ -456,7 +565,7 @@ export const useAi = defineStore('ai', {
       }
       if (call.name === 'search_text') {
         if (typeof args.query !== 'string' || !args.query.trim()) throw new Error('缺少 query 参数')
-        const hits = await api.searchText(ws.root, args.query, 20, nextSearchRequestId(), 'ai')
+        const hits = await api.searchText(root, args.query, 20, nextSearchRequestId(), 'ai')
         if (!hits.length) return '（无匹配）'
         return hits
           .map((h) => `${h.path}${h.line > 0 ? ` 第${h.line}行` : ''}（命中 ${h.count} 处）`)
@@ -485,8 +594,39 @@ export const useAi = defineStore('ai', {
       session.requestId = requestId
 
       const ws = useWorkspace()
-      let useTools = this.toolsEnabled && !!ws.root
-      const system = await this.buildSystem(text, session, useTools)
+      const requestRoot = ws.root
+      const requestProvider = { ...this.activeProvider }
+      let useTools = this.toolsEnabled && !!requestRoot
+      let system: string | null
+      try {
+        system = await this.buildSystem(text, session, useTools)
+      } catch (err) {
+        if (assistant.streaming) assistant.error = String(err)
+        assistant.streaming = false
+        if (session.requestId === requestId) {
+          session.busy = false
+          session.requestId = null
+        }
+        if (useWorkspace().root === requestRoot && this.sessions.some((s) => s.id === session.id)) {
+          void this.persist(requestRoot).catch((e) => console.warn('[bmd] 保存 AI 会话失败', e))
+        }
+        return
+      }
+      if (
+        useWorkspace().root !== requestRoot ||
+        !assistant.streaming ||
+        session.requestId !== requestId
+      ) {
+        assistant.streaming = false
+        if (session.requestId === requestId) {
+          session.busy = false
+          session.requestId = null
+        }
+        if (useWorkspace().root === requestRoot && this.sessions.some((s) => s.id === session.id)) {
+          void this.persist(requestRoot).catch((e) => console.warn('[bmd] 保存 AI 会话失败', e))
+        }
+        return
+      }
       // 历史裁剪：最近 12 条（工具轨迹不进历史，只保留最终问答文本）
       const wire: ChatWireMsg[] = session.messages
         .filter((m) => !m.streaming && !m.error)
@@ -509,7 +649,7 @@ export const useAi = defineStore('ai', {
           await ipc().aiChat(
             {
               requestId,
-              provider: { ...this.activeProvider },
+              provider: requestProvider,
               system,
               messages: wire,
               tools: sendTools,
@@ -552,7 +692,7 @@ export const useAi = defineStore('ai', {
             const t0 = Date.now()
             let output: string
             try {
-              output = await this.executeTool(call)
+              output = await this.executeTool(call, requestRoot)
             } catch (e) {
               output = `工具执行失败：${e instanceof Error ? e.message : e}`
               step.error = output
@@ -570,7 +710,7 @@ export const useAi = defineStore('ai', {
           session.requestId = requestId
         }
       } catch (err) {
-        assistant.error = String(err)
+        if (assistant.streaming) assistant.error = String(err)
       } finally {
         assistant.streaming = false
         // 仅当仍是本请求时才清理，避免 stop 后新请求的状态被旧请求的 finally 误清
@@ -578,7 +718,9 @@ export const useAi = defineStore('ai', {
           session.busy = false
           session.requestId = null
         }
-        void this.persist()
+        if (useWorkspace().root === requestRoot && this.sessions.some((s) => s.id === session.id)) {
+          void this.persist(requestRoot).catch((e) => console.warn('[bmd] 保存 AI 会话失败', e))
+        }
       }
     },
 
@@ -588,7 +730,13 @@ export const useAi = defineStore('ai', {
         ? this.sessions.find((s) => s.id === sessionId)
         : this.current
       if (!session) return
-      if (session.requestId) await ipc().aiCancel(session.requestId)
+      if (session.requestId) {
+        try {
+          await ipc().aiCancel(session.requestId)
+        } catch (e) {
+          console.warn('[bmd] 取消 AI 请求失败', e)
+        }
+      }
       const streaming = session.messages.find((m) => m.streaming)
       if (streaming) streaming.streaming = false
       session.busy = false

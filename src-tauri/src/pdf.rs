@@ -50,7 +50,7 @@ pub fn handle_protocol<R: Runtime>(
         return resp(200, "text/html; charset=utf-8", p.html.clone().into_bytes());
     }
     // 相对资源：仅图片，按文档目录解析
-    let Some(mime) = image_mime(&rest) else {
+    let Some(mime) = image_mime(rest) else {
         return resp(404, "text/plain", b"unsupported resource".to_vec());
     };
     let Some(base) = &p.base_dir else {

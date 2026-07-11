@@ -17,6 +17,8 @@ export interface Tab {
   revision: number
   /** 最近一次成功写盘对应的修订号。 */
   savedRevision: number
+  /** EditorState 被替换的代次；同一预览标签轮播文件时通知 EditorHost 重建内容。 */
+  editorVersion: number
   /** 磁盘文本编码；保存时保持原编码。 */
   encoding: string
   mtimeMs: number | null
@@ -33,8 +35,18 @@ const nextId = () => `tab-${++seq}-${Math.random().toString(36).slice(2, 8)}`
 const titleOf = (path: string) => path.split(/[/\\]/).pop() ?? path
 type DirtyPreviewAction = 'save' | 'discard' | 'cancel'
 type TabKind = Tab['kind']
-let previewRequestSeq = 0
+/** 所有会改变活动文档的用户意图共用序号，异步读取完成后只允许最新意图抢焦点。 */
+let navigationRequestSeq = 0
 const saveQueues = new Map<string, Promise<boolean>>()
+
+async function reportSaveError(error: unknown) {
+  console.error('[bmd] 保存文件失败', error)
+  await menu()?.askChoice(
+    '保存文件失败',
+    error instanceof Error ? error.message : String(error),
+    [{ value: 'ok', label: '知道了', primary: true }],
+  )
+}
 
 function kindOfPath(path: string): TabKind {
   return isHtmlPath(path) ? 'html' : isImagePath(path) ? 'image' : isMarkdownPath(path) ? 'md' : 'text'
@@ -46,7 +58,13 @@ function isEditable(kind: TabKind): boolean {
 
 function comparablePath(path: string): string {
   const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
-  return /^[a-z]:/i.test(normalized) ? normalized.toLowerCase() : normalized
+  return /^[a-z]:/i.test(normalized) || normalized.startsWith('//')
+    ? normalized.toLowerCase()
+    : normalized
+}
+
+function samePath(a: string, b: string): boolean {
+  return comparablePath(a) === comparablePath(b)
 }
 
 function matchesPathPrefix(path: string, target: string, isDir: boolean): boolean {
@@ -94,6 +112,7 @@ async function createPathTab(path: string, preview: boolean): Promise<Tab> {
     dirty: false,
     revision: 0,
     savedRevision: 0,
+    editorVersion: 0,
     encoding: payload.encoding,
     mtimeMs: payload.mtimeMs,
     conflict: false,
@@ -116,12 +135,12 @@ export const useTabs = defineStore('tabs', {
 
   actions: {
     async openFile(path: string) {
-      // 正式打开代表更晚的用户意图，取消仍在读取中的临时预览。
-      previewRequestSeq++
-      const existing = this.tabs.find((t) => t.path === path)
+      const requestId = ++navigationRequestSeq
+      const existing = this.tabs.find((t) => !!t.path && samePath(t.path, path))
       if (existing) {
         if (existing.id !== this.activeId) {
           const ok = await this.saveDirtyPreviewBeforeLeaving(this.activeId)
+          if (requestId !== navigationRequestSeq) return this.active ?? existing
           if (!ok) return this.active ?? existing
         }
         existing.preview = false
@@ -131,41 +150,48 @@ export const useTabs = defineStore('tabs', {
       const active = this.active
       if (active?.preview && active.dirty) {
         const ok = await this.saveDirtyPreviewBeforeLeaving(active.id)
+        if (requestId !== navigationRequestSeq) return this.active ?? active
         if (!ok) return active
       }
-      const tab = await createPathTab(path, false)
-      const loadedWhileWaiting = this.tabs.find((t) => t.path === path)
+      let tab: Tab
+      try {
+        tab = await createPathTab(path, false)
+      } catch (error) {
+        if (requestId !== navigationRequestSeq && this.active) return this.active
+        throw error
+      }
+      const loadedWhileWaiting = this.tabs.find((t) => !!t.path && samePath(t.path, path))
       if (loadedWhileWaiting) {
         loadedWhileWaiting.preview = false
-        this.activeId = loadedWhileWaiting.id
+        if (requestId === navigationRequestSeq) this.activeId = loadedWhileWaiting.id
         return loadedWhileWaiting
       }
       this.tabs.push(tab)
-      this.activeId = tab.id
+      if (requestId === navigationRequestSeq) this.activeId = tab.id
       return tab
     },
 
     /** 左侧单击：共用一个临时预览标签轮播文件，避免标签栏堆积 */
     async previewFile(path: string) {
-      const requestId = ++previewRequestSeq
-      const formal = this.tabs.find((t) => t.path === path && !t.preview)
+      const requestId = ++navigationRequestSeq
+      const formal = this.tabs.find((t) => !!t.path && samePath(t.path, path) && !t.preview)
       if (formal) {
         const ok = await this.saveDirtyPreviewBeforeLeaving(this.activeId)
-        if (requestId !== previewRequestSeq) return this.active ?? formal
+        if (requestId !== navigationRequestSeq) return this.active ?? formal
         if (!ok) return this.active ?? formal
         this.activeId = formal.id
         return formal
       }
 
       const currentPreview = this.tabs.find((t) => t.preview)
-      if (currentPreview?.path === path) {
+      if (currentPreview?.path && samePath(currentPreview.path, path)) {
         this.activeId = currentPreview.id
         return currentPreview
       }
 
       if (currentPreview) {
         const ok = await this.saveDirtyPreviewBeforeLeaving(currentPreview.id)
-        if (requestId !== previewRequestSeq) return this.active ?? currentPreview
+        if (requestId !== navigationRequestSeq) return this.active ?? currentPreview
         if (!ok) {
           this.activeId = currentPreview.id
           return currentPreview
@@ -177,14 +203,16 @@ export const useTabs = defineStore('tabs', {
       try {
         tab = await createPathTab(path, true)
       } catch (error) {
-        if (requestId !== previewRequestSeq) {
+        if (requestId !== navigationRequestSeq) {
           const active = this.active
           if (active) return active
         }
         throw error
       }
-      if (requestId !== previewRequestSeq) return this.active ?? tab
-      const formalAfterLoad = this.tabs.find((t) => t.path === path && !t.preview)
+      if (requestId !== navigationRequestSeq) return this.active ?? tab
+      const formalAfterLoad = this.tabs.find(
+        (t) => !!t.path && samePath(t.path, path) && !t.preview,
+      )
       if (formalAfterLoad) {
         this.activeId = formalAfterLoad.id
         return formalAfterLoad
@@ -196,25 +224,25 @@ export const useTabs = defineStore('tabs', {
 
     /** 双击文件或预览标签：把临时预览确认成正式标签 */
     confirmPreview(id: string) {
-      previewRequestSeq++
       const tab = this.tabs.find((t) => t.id === id)
       if (!tab) return false
+      navigationRequestSeq++
       tab.preview = false
       this.activeId = tab.id
       return true
     },
 
-    async replacePreviewTab(tab: Tab, path: string, requestId = previewRequestSeq) {
+    async replacePreviewTab(tab: Tab, path: string, requestId = navigationRequestSeq) {
       let payload
       try {
         payload = await loadTabPayload(path)
       } catch (error) {
-        if (requestId !== previewRequestSeq || !tab.preview || !this.tabs.includes(tab)) {
+        if (requestId !== navigationRequestSeq || !tab.preview || !this.tabs.includes(tab)) {
           return this.active ?? tab
         }
         throw error
       }
-      if (requestId !== previewRequestSeq || !tab.preview || !this.tabs.includes(tab)) {
+      if (requestId !== navigationRequestSeq || !tab.preview || !this.tabs.includes(tab)) {
         return this.active ?? tab
       }
       editorRegistry.remove(tab.id)
@@ -230,40 +258,55 @@ export const useTabs = defineStore('tabs', {
       tab.conflict = false
       tab.initialDoc = payload.content
       tab.previewUrl = payload.previewUrl
+      tab.editorVersion++
       this.activeId = tab.id
       return tab
     },
 
-    newFile() {
-      // 初始不置 dirty：未编辑过的新文件关闭时不弹确认（真实编辑由 markDirty 标记）
-      const tab: Tab = {
-        id: nextId(),
-        path: null,
-        title: '未命名',
-        preview: false,
-        kind: 'md',
-        dirty: false,
-        revision: 0,
-        savedRevision: 0,
-        encoding: 'utf-8',
-        mtimeMs: null,
-        conflict: false,
-        initialDoc: '',
-        previewUrl: null,
+    async newFile() {
+      const requestId = ++navigationRequestSeq
+      const create = () => {
+        // 初始不置 dirty：未编辑过的新文件关闭时不弹确认（真实编辑由 markDirty 标记）
+        const tab: Tab = {
+          id: nextId(),
+          path: null,
+          title: '未命名',
+          preview: false,
+          kind: 'md',
+          dirty: false,
+          revision: 0,
+          savedRevision: 0,
+          editorVersion: 0,
+          encoding: 'utf-8',
+          mtimeMs: null,
+          conflict: false,
+          initialDoc: '',
+          previewUrl: null,
+        }
+        this.tabs.push(tab)
+        this.activeId = tab.id
+        return tab
       }
-      this.tabs.push(tab)
-      this.activeId = tab.id
-      return tab
+      const active = this.active
+      if (active?.preview && active.dirty) {
+        const ok = await this.saveDirtyPreviewBeforeLeaving(active.id)
+        if (!ok || requestId !== navigationRequestSeq) return this.active ?? active
+      }
+      return create()
     },
 
     activate(id: string) {
       if (!this.tabs.some((t) => t.id === id)) return false
+      const requestId = ++navigationRequestSeq
       if (this.activeId === id) return true
       const active = this.active
       if (active?.preview && active.dirty) {
         return this.saveDirtyPreviewBeforeLeaving(active.id).then((ok) => {
-          if (ok) this.activeId = id
-          return ok
+          if (!ok || requestId !== navigationRequestSeq || !this.tabs.some((t) => t.id === id)) {
+            return false
+          }
+          this.activeId = id
+          return true
         })
       }
       this.activeId = id
@@ -318,6 +361,18 @@ export const useTabs = defineStore('tabs', {
         if (!path) return false
       }
 
+      const duplicate = this.tabs.find(
+        (item) => item.id !== id && !!item.path && samePath(item.path, path),
+      )
+      if (duplicate) {
+        await menu()?.askChoice(
+          '无法保存',
+          `「${duplicate.title}」已在另一个标签中打开。请先关闭该标签，避免两个编辑器互相覆盖。`,
+          [{ value: 'ok', label: '知道了', primary: true }],
+        )
+        return false
+      }
+
       // 选完路径后再取内容，保证“另存为”弹窗期间的输入也包含在本次快照中。
       const revision = tab.revision
       const doc = editorRegistry.getDoc(id) ?? tab.initialDoc
@@ -355,6 +410,7 @@ export const useTabs = defineStore('tabs', {
           nextKind === 'html'
             ? await ipc().previewHtmlUrl(path).catch(() => null)
             : null
+        tab.editorVersion++
       }
       tab.savedRevision = revision
       tab.dirty = tab.revision !== revision
@@ -376,7 +432,14 @@ export const useTabs = defineStore('tabs', {
       const tab = this.tabs.find((t) => t.id === id)
       if (!tab?.preview || !tab.dirty) return true
       const action = await this.askDirtyPreviewAction(tab)
-      if (action === 'save') return await this.saveTab(tab.id)
+      if (action === 'save') {
+        try {
+          return await this.saveTab(tab.id)
+        } catch (error) {
+          await reportSaveError(error)
+          return false
+        }
+      }
       if (action === 'discard') return await this.discardTabChanges(tab.id)
       return false
     },
@@ -422,6 +485,7 @@ export const useTabs = defineStore('tabs', {
       tab.savedRevision = cleanRevision
       tab.dirty = false
       tab.conflict = false
+      tab.editorVersion++
       return true
     },
 
@@ -451,7 +515,12 @@ export const useTabs = defineStore('tabs', {
           : await this.askDirtyCloseAction(tab)
         if (action === 'cancel') return false
         if (action === 'save') {
-          if (!(await this.saveTab(tab.id))) return false
+          try {
+            if (!(await this.saveTab(tab.id))) return false
+          } catch (error) {
+            await reportSaveError(error)
+            return false
+          }
           continue
         }
         tab.dirty = false
@@ -473,9 +542,9 @@ export const useTabs = defineStore('tabs', {
     async closeTab(id: string): Promise<boolean> {
       const tab = this.tabs.find((t) => t.id === id)
       if (!tab) return false
+      if (tab.preview) navigationRequestSeq++
       await this.awaitPendingSave(id)
       if (!(await this.confirmDirtyTabForClose(tab))) return false
-      if (tab.preview) previewRequestSeq++
       const idx = this.tabs.findIndex((t) => t.id === id)
       this.tabs.splice(idx, 1)
       editorRegistry.remove(id)
@@ -559,6 +628,7 @@ export const useTabs = defineStore('tabs', {
       } else {
         editorRegistry.remove(id)
         tab.initialDoc = payload.content
+        tab.editorVersion++
       }
     },
 
@@ -591,7 +661,7 @@ export const useTabs = defineStore('tabs', {
 
     /** 文件系统重命名成功后，原子映射所有受影响标签的路径与渲染能力。 */
     async remapPathPrefix(from: string, to: string, isDir: boolean) {
-      previewRequestSeq++
+      navigationRequestSeq++
       for (const tab of this.tabsForPath(from, isDir)) {
         const mapped = remapPath(tab.path!, from, to)
         const oldKind = tab.kind
@@ -610,6 +680,7 @@ export const useTabs = defineStore('tabs', {
         tab.initialDoc = payload.content
         tab.previewUrl = payload.previewUrl
         tab.conflict = false
+        tab.editorVersion++
         const cleanRevision = tab.revision + 1
         tab.revision = cleanRevision
         tab.savedRevision = cleanRevision
@@ -619,7 +690,7 @@ export const useTabs = defineStore('tabs', {
 
     /** 文件/目录已被明确删除后，无二次询问地关闭其全部标签。 */
     forceClosePathPrefix(path: string, isDir: boolean) {
-      previewRequestSeq++
+      navigationRequestSeq++
       const ids = new Set(this.tabsForPath(path, isDir).map((tab) => tab.id))
       if (!ids.size) return
       for (const id of ids) editorRegistry.remove(id)
@@ -649,6 +720,7 @@ export const useTabs = defineStore('tabs', {
         }
       }
       if (session.active !== null && this.tabs[session.active]) {
+        navigationRequestSeq++
         this.activeId = this.tabs[session.active].id
       }
     },

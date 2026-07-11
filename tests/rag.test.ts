@@ -75,4 +75,41 @@ describe('RAG（M6/FR-39）', () => {
     await ai.ensureIndex()
     expect(indexSpy).toHaveBeenCalledTimes(1)
   })
+
+  it('损坏的嵌入配置不会阻断应用启动', () => {
+    localStorage.setItem('bmd.ai.embed', '{bad json')
+    setActivePinia(createPinia())
+    expect(useAi().embed).toBeNull()
+  })
+
+  it('切换工作区时旧索引完成不会污染新工作区索引状态', async () => {
+    const ws = useWorkspace()
+    ws.root = '/workspace-a'
+    const ai = useAi()
+    let releaseOld!: () => void
+    let startedOld!: () => void
+    const gate = new Promise<void>((resolve) => (releaseOld = resolve))
+    const entered = new Promise<void>((resolve) => (startedOld = resolve))
+    const index = vi.fn(async (root: string) => {
+      if (root === '/workspace-a') {
+        startedOld()
+        await gate
+      }
+      return { files: 0, chunks: 0, embedded: 0, skipped: 0 }
+    })
+    mock.ragIndex = index
+
+    const oldIndex = ai.ensureIndex()
+    await entered
+    ws.root = '/workspace-b'
+    await ai.reloadForWorkspace('/workspace-a', '/workspace-b')
+    await ai.ensureIndex()
+    releaseOld()
+    await oldIndex
+
+    expect(index.mock.calls.map(([root]) => root)).toEqual(['/workspace-a', '/workspace-b'])
+    expect(ai.ragIndexed).toBe(true)
+    expect(ai.ragIndexedRoot).toBe('/workspace-b')
+    expect(ai.ragIndexing).toBe(false)
+  })
 })

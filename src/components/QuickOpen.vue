@@ -1,26 +1,32 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { useTabs } from '@/stores/tabs'
+import { useFiles } from '@/stores/files'
 import { useUi } from '@/stores/ui'
 import { useWorkspace } from '@/stores/workspace'
 
 const ui = useUi()
-const tabs = useTabs()
+const fileActions = useFiles()
 const workspace = useWorkspace()
 
 const query = ref('')
 const selected = ref(0)
 const input = ref<HTMLInputElement | null>(null)
 const files = ref<string[]>([])
+let loadRequestSeq = 0
 
 watch(
-  () => ui.quickOpenVisible,
-  async (v) => {
-    if (!v) return
+  () => [ui.quickOpenVisible, workspace.root] as const,
+  async ([visible, root]) => {
+    const requestId = ++loadRequestSeq
+    if (!visible) return
     query.value = ''
     selected.value = 0
-    files.value = await workspace.collectAllText()
+    files.value = []
+    const collected = await workspace.collectAllText()
+    if (requestId !== loadRequestSeq || !ui.quickOpenVisible || root !== workspace.root) return
+    files.value = collected
     await nextTick()
+    if (requestId !== loadRequestSeq || !ui.quickOpenVisible) return
     input.value?.focus()
   },
 )
@@ -48,7 +54,7 @@ const matches = computed(() => {
 
 async function open(path: string) {
   ui.quickOpenVisible = false
-  await tabs.openFile(path)
+  await fileActions.openPath(path)
 }
 
 function onKey(e: KeyboardEvent) {
@@ -56,7 +62,7 @@ function onKey(e: KeyboardEvent) {
     ui.quickOpenVisible = false
   } else if (e.key === 'ArrowDown') {
     e.preventDefault()
-    selected.value = Math.min(selected.value + 1, matches.value.length - 1)
+    if (matches.value.length) selected.value = Math.min(selected.value + 1, matches.value.length - 1)
   } else if (e.key === 'ArrowUp') {
     e.preventDefault()
     selected.value = Math.max(selected.value - 1, 0)

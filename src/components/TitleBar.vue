@@ -70,7 +70,12 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [tabs.tabs.length, tabs.activeId] as const,
+  () => [
+    tabs.activeId,
+    tabs.tabs
+      .map((tab) => `${tab.id}\u0000${tab.title}\u0000${tab.preview}\u0000${tab.dirty}`)
+      .join('\n'),
+  ] as const,
   async () => {
     await nextTick()
     updateArrows()

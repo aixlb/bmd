@@ -65,9 +65,10 @@ function onRenameKey(e: KeyboardEvent) {
   }
 }
 
-function onClick() {
+function onClick(e: MouseEvent) {
   if (props.entry.isDir) {
-    workspace.toggleDir(props.entry.path)
+    // 双击会先触发两次 click；只处理第一次，避免目录开合两次后又误进重命名。
+    if (e.detail <= 1) void workspace.toggleDir(props.entry.path)
   } else if (isOpenable.value) {
     if (clickTimer) clearTimeout(clickTimer)
     clickTimer = setTimeout(() => {
@@ -78,6 +79,7 @@ function onClick() {
 }
 
 function onDblClick() {
+  if (props.entry.isDir) return
   if (clickTimer) {
     clearTimeout(clickTimer)
     clickTimer = null

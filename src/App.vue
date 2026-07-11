@@ -42,6 +42,7 @@ let unlistenCloseRequested: (() => void) | null = null
 let unlistenDragDrop: (() => void) | null = null
 let unlistenOpenFile: (() => void) | null = null
 let unlistenFsChanged: (() => void) | null = null
+let incomingRequestSeq = 0
 
 let aiWorkspaceTask: Promise<void> = Promise.resolve()
 const stopAiWorkspaceWatch = watch(
@@ -69,6 +70,7 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 function disposeRuntime() {
   if (runtimeDisposed) return
   runtimeDisposed = true
+  incomingRequestSeq++
   window.removeEventListener('beforeunload', onBeforeUnload)
   unlistenCloseRequested?.()
   unlistenDragDrop?.()
@@ -106,7 +108,7 @@ async function requestWindowClose() {
 
 function comparablePath(path: string) {
   const slash = path.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
-  return /^[a-z]:/i.test(slash) ? slash.toLowerCase() : slash
+  return /^[a-z]:/i.test(slash) || slash.startsWith('//') ? slash.toLowerCase() : slash
 }
 
 function isInsideRoot(path: string, root: string | null) {
@@ -137,7 +139,9 @@ async function classifyIncoming(path: string): Promise<IncomingKind> {
 
 /** 打开系统递来的路径（拖拽入窗 / 双击打开方式，FR-24）。 */
 async function openIncoming(paths: string[], source: 'add' | 'system' = 'add') {
+  const requestId = ++incomingRequestSeq
   const classified = await Promise.all(paths.map(async (path) => ({ path, kind: await classifyIncoming(path) })))
+  if (requestId !== incomingRequestSeq) return
   const incomingFiles = classified.filter((item) => item.kind === 'file').map((item) => item.path)
   if (
     source === 'system' &&
@@ -147,8 +151,10 @@ async function openIncoming(paths: string[], source: 'add' | 'system' = 'add') {
     incomingFiles.every((path) => !isInsideRoot(path, workspace.root))
   ) {
     await workspace.clear()
+    if (requestId !== incomingRequestSeq) return
   }
   for (const item of classified) {
+    if (requestId !== incomingRequestSeq) return
     if (item.kind === 'file') {
       try {
         await tabs.openFile(item.path)

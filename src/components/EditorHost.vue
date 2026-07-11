@@ -69,8 +69,23 @@ function scheduleAutosave(tabId: string) {
 function pushOutline(state: EditorState) {
   if (outlineTimer) clearTimeout(outlineTimer)
   outlineTimer = setTimeout(() => {
+    outlineTimer = null
     ui.outline = getOutline(state)
   }, 200)
+}
+
+function clearDerivedTimers() {
+  if (countTimer) clearTimeout(countTimer)
+  if (outlineTimer) clearTimeout(outlineTimer)
+  countTimer = null
+  outlineTimer = null
+}
+
+function pushCursor(state: EditorState) {
+  const head = state.selection.main.head
+  const line = state.doc.lineAt(head)
+  ui.cursor = { line: line.number, col: head - line.from + 1 }
+  ui.cursorPos = head
 }
 
 function trackUpdate(tabId: string, update: ViewUpdate) {
@@ -85,13 +100,11 @@ function trackUpdate(tabId: string, update: ViewUpdate) {
     pushOutline(update.state)
     if (countTimer) clearTimeout(countTimer)
     countTimer = setTimeout(() => {
+      countTimer = null
       ui.counts = countWords(update.state.doc.toString())
     }, 300)
   }
-  const head = update.state.selection.main.head
-  const line = update.state.doc.lineAt(head)
-  ui.cursor = { line: line.number, col: head - line.from + 1 }
-  ui.cursorPos = head
+  pushCursor(update.state)
 }
 
 /** 粘贴图片 → base64 → Rust 落盘 assets/，返回相对路径（FR-25/26） */
@@ -133,6 +146,8 @@ const imageTab = computed(() => (tabs.active?.kind === 'image' ? tabs.active : n
 
 function syncActive() {
   if (!view) return
+  // 上一文档的延迟派生任务不能在切换后回写当前文档的字数或大纲。
+  clearDerivedTimers()
   // 收起上一个标签的状态；若有未存内容立即落盘（FR-19）
   if (currentTabId && editorRegistry.get(currentTabId)) {
     editorRegistry.set(currentTabId, view.state)
@@ -144,7 +159,8 @@ function syncActive() {
     currentTabId = null
     view.setState(EditorState.create({ doc: '' }))
     ui.outline = []
-    if (tab) ui.counts = countWords('')
+    ui.counts = countWords('')
+    pushCursor(view.state)
     return
   }
   let state = editorRegistry.get(tab.id)
@@ -156,6 +172,7 @@ function syncActive() {
   currentTabId = tab.id
   view.setState(state)
   ui.counts = countWords(state.doc.toString())
+  pushCursor(state)
   pushOutline(state)
   view.focus()
 }
@@ -170,7 +187,7 @@ onMounted(() => {
   view = new EditorView({ parent: host.value! })
   editorRegistry.setActiveView(view)
   stopActiveWatch = watch(
-    () => [tabs.activeId, tabs.active?.kind] as const,
+    () => [tabs.activeId, tabs.active?.kind, tabs.active?.editorVersion] as const,
     syncActive,
     { immediate: true },
   )
@@ -181,8 +198,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('blur', saveAllDirty)
   stopActiveWatch?.()
   stopActiveWatch = null
-  if (countTimer) clearTimeout(countTimer)
-  if (outlineTimer) clearTimeout(outlineTimer)
+  clearDerivedTimers()
   for (const timer of autosaveTimers.values()) clearTimeout(timer)
   autosaveTimers.clear()
   editorRegistry.setActiveView(null)

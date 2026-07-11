@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { writeClipboard } from '../core/clipboard'
 import { parseTable, serializeTable, TableWidget } from '../core/preview/widgets'
 import { buildExportHtml } from '../src/export/html'
 
@@ -49,6 +50,18 @@ describe('表格序列化（M4 就地编辑的写回路径）', () => {
     const button = [...dom.querySelectorAll('button')].find((item) => item.textContent === '复制')!
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(serializeTable(parseTable(src)!)))
+  })
+
+  it('异步剪贴板被拒绝时回退到兼容复制路径', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn(async () => Promise.reject(new Error('denied'))) },
+    })
+    const execCommand = vi.fn(() => true)
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
+
+    expect(await writeClipboard('回退内容')).toBe(true)
+    expect(execCommand).toHaveBeenCalledWith('copy')
   })
 })
 
